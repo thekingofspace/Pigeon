@@ -62,8 +62,10 @@ local shop = Pigeon.new("Shop")</code></pre>
 		A server-only method called on the client errors with
 		<code>ERR_NOT_SERVER</code>, and a client-only method called on the server errors
 		with <code>ERR_NOT_CLIENT</code>. The error points at your call site, not at
-		Pigeon. <a href="#approved"><code>Approved</code></a> is the one exception: it
-		never checks which machine it is on.
+		Pigeon. Two methods do not follow that rule.
+		<a href="#approved"><code>Approved</code></a> never checks which machine it is on,
+		and <a href="#init"><code>Init</code></a> is a no-op on the server rather than an
+		error, so shared code can call it either way.
 	</li>
 	<li>
 		Once a carrier is dropped it goes quiet instead of erroring. Sends do nothing,
@@ -108,7 +110,7 @@ local shop = Pigeon.new("Shop")</code></pre>
 		<tr><td><a href="#usehandshake"><code>UseHandshake</code></a></td><td>Server</td><td>Closes the channel behind a guard you write.</td></tr>
 		<tr><td><a href="#handshake"><code>Handshake</code></a></td><td>Client</td><td>Presents credentials to the guard and waits for a ruling.</td></tr>
 		<tr><td><a href="#approved"><code>Approved</code></a></td><td>Server</td><td>Narrows a player list to those the guard let in.</td></tr>
-		<tr><td><a href="#revoke"><code>Revoke</code></a></td><td>Server</td><td>Takes admission back off players and releases their staged tables.</td></tr>
+		<tr><td><a href="#revoke"><code>Revoke</code></a></td><td>Server</td><td>Takes admission back off players, empties them out of rooms and releases their staged tables.</td></tr>
 		<tr><td><a href="#useincoming"><code>UseIncoming</code></a></td><td>Shared</td><td>Adds middleware to the inbound path.</td></tr>
 		<tr><td><a href="#useoutgoing"><code>UseOutgoing</code></a></td><td>Shared</td><td>Adds middleware to the outbound path.</td></tr>
 		<tr><td><a href="#capturetable"><code>CaptureTable</code></a></td><td>Server</td><td>Publishes a staged table under an id.</td></tr>
@@ -757,6 +759,25 @@ shop:Init()</code></pre>
 	Read more in <a href="../guide/rooms.html">Rooms</a>.
 </p>
 
+<p>
+	On a carrier with a <a href="#usehandshake">handshake guard</a>, only players who
+	have passed it can be put in a room. <a href="#createroom"><code>CreateRoom</code></a>
+	and <a href="#joinroom"><code>JoinRoom</code></a> raise
+	<code>ERR_NOT_APPROVED</code> for anyone who has not.
+</p>
+
+<p>
+	The reason is that a room on a guarded channel is a list of people allowed to hear
+	something. Somebody who cannot pass the guard is filtered out of every send anyway,
+	so their entry in the room could never do anything. Failing at the call says so,
+	instead of leaving you a room that quietly reaches fewer people than it lists.
+</p>
+
+<p>
+	So the order is: let the client handshake first, then put it in rooms. A carrier
+	with no guard takes anybody, exactly as it always did.
+</p>
+
 <h3>CreateRoom <span class="badge badge--server">Server</span></h3>
 
 <div class="api">
@@ -795,6 +816,29 @@ raid:CreateRoom("Lobby", {})   -- empty, and stays alive until you destroy it</c
 		message twice. <a href="#joinroom"><code>JoinRoom</code></a> does check, so
 		use that if you are not sure.
 	</p>
+</div>
+
+<h4>Members the guard has not admitted</h4>
+
+<p>
+	If this carrier has a <a href="#usehandshake">handshake guard</a>, every player in
+	<code>Members</code> must have passed it. If one has not, the call raises
+	<code>ERR_NOT_APPROVED</code>, which names both the player and the room. With no
+	guard installed the check does not run and any player is fine.
+</p>
+
+<p>
+	The whole list is read before anything is written, so a refused call changes nothing
+	at all. No empty room is left behind under that name, and a room that already had
+	that name is still there with its old members.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>-- Kestrel has not handshaked yet, so neither player is added
+-- and "Party1" is not created.
+raid:CreateRoom("Party1", { rune, kestrel })
+--&gt; ERR_NOT_APPROVED | Kestrel has not passed the handshake, so cannot be put in room 'Party1'.</code></pre>
 </div>
 
 <p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
@@ -862,6 +906,64 @@ raid:CreateRoom("Lobby", {})   -- empty, and stays alive until you destroy it</c
 end)
 
 raid:JoinRoom("Party1", { playerA, playerB })</code></pre>
+</div>
+
+<h4>Members the guard has not admitted</h4>
+
+<p>
+	Same rule as <a href="#createroom"><code>CreateRoom</code></a>. On a carrier with a
+	<a href="#usehandshake">handshake guard</a>, naming a player who has not passed it
+	raises <code>ERR_NOT_APPROVED</code> with that player's name and the room's. On a
+	carrier with no guard the check does not run.
+</p>
+
+<p>
+	Everyone named is checked before anyone is added, so a refused call adds nobody.
+	Name one admitted player and one who is not and neither goes in. If the room did not
+	exist, it still does not.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local raid = Pigeon.new("Raid")
+
+raid:UseHandshake(function(player, ticket)
+	return holdsTicket(player, ticket)
+end)
+
+-- Wrong order. Nobody has handshaked this early, so this throws
+-- and the player is in no room.
+Players.PlayerAdded:Connect(function(player)
+	raid:JoinRoom("Lobby", player)
+end)
+
+-- Right order. They are through the door by the time this runs,
+-- because an unapproved client's messages never reach a listener.
+raid:On("Ready", function(player)
+	raid:JoinRoom("Lobby", player)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local raid = Pigeon.new("Raid")
+
+if raid:Handshake(myTicket) then
+	raid:On("BossSpawned", showBoss)
+	raid:Init()
+	raid:Emit("Ready")
+end</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not call this from inside the guard itself. A player is only recorded as
+		admitted after your guard has returned <code>true</code>, so a
+		<code>JoinRoom</code> in there always throws
+		<code>ERR_NOT_APPROVED</code>. Put them in a room from a listener that runs
+		afterwards, as above.
+	</p>
 </div>
 
 <p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
@@ -1006,15 +1108,31 @@ mods:Broadcast("Alert", "someone was reported")</code></pre>
 	<li>
 		Only one guard exists at a time. Installing another replaces it and closes the
 		channel again, because the clients already inside were judged by the old rules.
-		They are not told, so they have to handshake again.
+		They are not told, so they have to handshake again. This clears admission only.
+		Rooms and staged table holders are left as they were, so a room can hold a
+		player the new guard has not yet ruled on.
 	</li>
 	<li>
 		The guard runs on every attempt and the latest answer wins. A later refusal takes
 		access away from a client that had it. That is how you revoke.
 	</li>
 	<li>
-		A guard that errors is caught. Pigeon warns and the client is told no. Access
-		that client already had is left as it was, because the guard never ruled.
+		A client that loses access this way is cleared out of the carrier exactly as
+		<a href="#revoke"><code>Revoke</code></a> clears it: out of every room, and off
+		every staged table it held, with its copies released on its machine. A client
+		that was never admitted is left alone, because there is nothing to take.
+	</li>
+	<li>
+		A guard that errors is caught. Pigeon warns with
+		<code>ERR_CALLBACK_ERROR</code> and the client is told no. An error counts as a
+		refusal, so a client that was in is put out, the same as if you had returned
+		<code>false</code>.
+	</li>
+	<li>
+		A player must be through the guard before you can put them in a room.
+		<a href="#createroom"><code>CreateRoom</code></a> and
+		<a href="#joinroom"><code>JoinRoom</code></a> raise
+		<code>ERR_NOT_APPROVED</code> otherwise.
 	</li>
 </ul>
 
@@ -1133,8 +1251,9 @@ local allowed = #mods:Approved({ player }) == 1</code></pre>
 
 <p>
 	Takes admission away again. Each player you name is cleared from the carrier's
-	admission list, so the guard no longer counts them as let in, and they are dropped
-	from the subscriber list of every staged table this carrier holds.
+	admission list, so the guard no longer counts them as let in. They are also taken
+	out of every room on this carrier and dropped from the subscriber list of every
+	staged table it holds.
 </p>
 
 <p>
@@ -1211,7 +1330,7 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 		</tr>
 		<tr>
 			<td>Rooms</td>
-			<td>They are taken out of every room on this carrier. Being approved again does not put them back, so call <code>JoinRoom</code> if you want that.</td>
+			<td>They are taken out of every room on this carrier. Rooms do not come back on their own, so once they are admitted again, call <a href="#joinroom"><code>JoinRoom</code></a> to put them back.</td>
 		</tr>
 		<tr>
 			<td>Getting back in</td>
@@ -1227,9 +1346,9 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 		Revoking only blocks sending when a guard is installed, because
 		<code>Approved</code> only filters when there is one. On a carrier with no
 		<a href="#usehandshake"><code>UseHandshake</code></a>, <code>Revoke</code> still
-		releases their staged tables, but broadcasts keep reaching them and their
-		messages keep arriving. Install a guard first, or this call does half of what
-		you think.
+		empties them out of every room and releases their staged tables, but broadcasts
+		keep reaching them and their messages keep arriving. Install a guard first, or
+		this call does half of what you think.
 	</p>
 </div>
 
@@ -1294,7 +1413,7 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 		<tr><td>Incoming, on the server</td><td>The player who sent it.</td></tr>
 		<tr><td>Incoming, on the client</td><td><code>nil</code>.</td></tr>
 		<tr><td>Outgoing, from <code>CallTo</code></td><td>The player being asked.</td></tr>
-		<tr><td>Outgoing, from <a href="#revoke"><code>Revoke</code></a></td><td>The player being revoked, on the reserved <code>__pigeon_table_revoke</code> message it sends them.</td></tr>
+		<tr><td>Outgoing, from <a href="#revoke"><code>Revoke</code></a> or a refused handshake</td><td>The player losing access, on the reserved <code>__pigeon_table_revoke</code> message it sends them.</td></tr>
 		<tr><td>Outgoing, from anything else</td><td><code>nil</code>, including server broadcasts.</td></tr>
 	</tbody>
 </table>
@@ -1506,8 +1625,10 @@ t.phase = "fighting"</code></pre>
 	<p>
 		This does not stop replication. Clients already holding the table keep getting
 		every write. All you have done is make the id unrequestable through this carrier.
-		To stop a client receiving, call <code>Release</code> on the mirror from that
-		client.
+		Three other calls do stop a client receiving: <code>Release</code> on the mirror
+		from that client, <a href="#revoke"><code>Revoke</code></a> on the server for one
+		player, and <a href="#destroy"><code>Destroy</code></a> on the carrier for
+		everybody.
 	</p>
 </div>
 
@@ -1760,6 +1881,15 @@ minigame:Destroy()</code></pre>
 			<td>
 				<code>Emit</code>, <code>Call</code>, <code>Ping</code>,
 				<code>Handshake</code> or <code>RequestTable</code> called on the server.
+			</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NOT_APPROVED | ... has not passed the handshake, so cannot be put in room '...'.</code></td>
+			<td>Error</td>
+			<td>
+				<code>CreateRoom</code> or <code>JoinRoom</code> named a player who has
+				not passed this carrier's handshake guard. Only on a carrier that has
+				one. Nothing was added.
 			</td>
 		</tr>
 		<tr>

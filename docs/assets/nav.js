@@ -27,13 +27,13 @@ window.PIGEON_SIDEBARS = [
 						link: "api/staged-table.html",
 						text: "StagedTable",
 						keywords:
-							"stagedtable gettable usecapture userelease cancapture canrelease release snapshot applysnapshot applypatches",
+							"stagedtable gettable usecapture userelease cancapture canrelease release snapshot applysnapshot applypatches proxy view nested detached err_stage write errors keys",
 					},
 					{
 						link: "api/network.html",
 						text: "Network",
 						keywords:
-							"network register unregister getref getrefcount receive push broadcast call respond broadcastcall ready diagnostics knowntransformers outbox",
+							"network register unregister getref getrefcount receive receivechannel push broadcast call respond broadcastcall ready diagnostics knowntransformers outbox buffer orphan bucket",
 					},
 					{
 						link: "api/types.html",
@@ -64,7 +64,8 @@ window.PIGEON_SIDEBARS = [
 					{
 						link: "guide/installation.html",
 						text: "Installation",
-						keywords: "install setup rojo wally replicatedstorage require",
+						keywords:
+							"install setup rojo studio replicatedstorage require string requires modulescript pigeonrefs files",
 					},
 					{
 						link: "guide/getting-started.html",
@@ -74,7 +75,8 @@ window.PIGEON_SIDEBARS = [
 					{
 						link: "guide/examples.html",
 						text: "Examples",
-						keywords: "examples recipes cookbook patterns samples snippets chat shop combat leaderboard",
+						keywords:
+							"examples recipes cookbook patterns samples snippets chat shop combat scoreboard party staff stats positions transport",
 					},
 				],
 			},
@@ -89,7 +91,8 @@ window.PIGEON_SIDEBARS = [
 					{
 						link: "guide/sending.html",
 						text: "Sending and Receiving",
-						keywords: "emit broadcast broadcastto broadcastexcept on off listener",
+						keywords:
+							"emit broadcast broadcastto broadcastexcept on off listener arguments nil reserved __pigeon_",
 					},
 					{
 						link: "guide/requests.html",
@@ -119,7 +122,8 @@ window.PIGEON_SIDEBARS = [
 					{
 						link: "guide/rooms.html",
 						text: "Rooms",
-						keywords: "room createroom joinroom leaveroom destroyroom sendtoroom party team",
+						keywords:
+							"room createroom joinroom leaveroom destroyroom sendtoroom party team handshake approved not_approved revoke guarded",
 					},
 					{
 						link: "guide/handshakes.html",
@@ -134,7 +138,8 @@ window.PIGEON_SIDEBARS = [
 					{
 						link: "guide/staged-tables.html",
 						text: "Staged Tables",
-						keywords: "staged table replicate state capture release force snapshot patch sync",
+						keywords:
+							"staged table replicate state capture release releasetable forcetable requesttable revoke mirror view guard snapshot patch sync batching",
 					},
 					{
 						link: "guide/unreliable.html",

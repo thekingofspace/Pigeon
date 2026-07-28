@@ -169,6 +169,13 @@ party:JoinRoom("party_1", player)             -- no effect, already in</code></p
 	existing list, or when you want the room to exist before anyone is in it.
 </p>
 
+<p>
+	On a carrier with a <a href="handshakes.html">handshake</a> guard, a player who has
+	not passed it cannot be added. The call errors with <code>ERR_NOT_APPROVED</code> and
+	nobody you named is added, not even the players who are approved. See
+	<a href="#rooms-and-guarded-channels">Rooms and guarded channels</a>.
+</p>
+
 <h3>LeaveRoom <span class="badge badge--server">Server</span></h3>
 
 <div class="api">
@@ -413,13 +420,112 @@ party:Emit("Say", id, "anyone want to run this?")</code></pre>
 	</p>
 </div>
 
-<h2>Rooms and handshakes</h2>
+<h2>Rooms and guarded channels</h2>
 
 <p>
-	<code>SendToRoom</code> goes through the same filter as every other broadcast. If
-	the carrier has a <a href="handshakes.html">handshake</a> installed, a member who
-	has not passed it is dropped from the list and hears nothing, even though they are
-	still in the room. Being in a room does not get you past a guard.
+	Everything above is about a carrier with no guard on it. Install a
+	<a href="handshakes.html">handshake</a> and rooms get one extra rule: the room may
+	only hold players the guard has approved.
+</p>
+
+<h3>An unapproved player cannot be put in a room</h3>
+
+<p>
+	<code>CreateRoom</code> and <code>JoinRoom</code> check every player you name. If the
+	carrier has a guard and one of them has not passed it, the call errors:
+</p>
+
+<pre><code>ERR_NOT_APPROVED | Kestrel has not passed the handshake, so cannot be put in room 'match_1'.</code></pre>
+
+<p>
+	The message names the player and the room, so you know which pair was refused. A
+	carrier with no guard is unchanged and still takes anybody.
+</p>
+
+<p>
+	The reason is that a room on a guarded channel is a list of people allowed to hear
+	something. Somebody who cannot pass the guard is filtered out of every send anyway, so
+	putting them in builds state that can never do anything. Failing at the call says so,
+	rather than leaving you a room that quietly does nothing.
+</p>
+
+<h3>The check is all or nothing</h3>
+
+<p>
+	Every player named is checked before a single one is added, so a refused call changes
+	nothing at all.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>The call</th><th>What is left behind</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>JoinRoom</code> naming one approved and one unapproved player</td>
+			<td>Neither is added. The approved one does not slip in.</td>
+		</tr>
+		<tr>
+			<td><code>JoinRoom</code> on a room that does not exist yet</td>
+			<td>The room is not created.</td>
+		</tr>
+		<tr>
+			<td><code>CreateRoom</code> that is refused</td>
+			<td>No empty room, and a room already under that name is not replaced.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local match = Pigeon.new("Match")
+match:UseHandshake(guard)
+
+-- Errors on the first unapproved player. Nobody is added, and if
+-- "match_1" did not exist, it still does not.
+match:JoinRoom("match_1", { approved, notApproved })
+
+-- Catch it if a refusal is normal for you.
+local ok, err = pcall(function()
+	match:JoinRoom("match_1", players)
+end)
+if not ok then
+	warn(err)
+end</code></pre>
+</div>
+
+<h3>Only the two calls that add players check</h3>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>Does it check approval?</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>CreateRoom</code></td><td>Yes. Errors with <code>ERR_NOT_APPROVED</code>.</td></tr>
+		<tr><td><code>JoinRoom</code></td><td>Yes. Errors with <code>ERR_NOT_APPROVED</code>.</td></tr>
+		<tr><td><code>LeaveRoom</code></td><td>No. Taking somebody out never needs approval.</td></tr>
+		<tr><td><code>DestroyRoom</code></td><td>No. It does not look at members at all.</td></tr>
+		<tr><td><code>SendToRoom</code></td><td>No. It filters at send time instead, as below.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>Sending still filters</h3>
+
+<p>
+	<code>SendToRoom</code> goes through the same filter as every other broadcast, and it
+	always did. A member the guard has not approved is dropped from the recipient list and
+	hears nothing. Being in a room does not get you past a guard.
+</p>
+
+<p>
+	With the rule above, that filter has little left to do, but it still matters in one
+	case. Installing a guard closes the channel to everybody and does not empty your rooms,
+	so a room built before <code>UseHandshake</code> keeps its members while none of them
+	are approved. They hear nothing until they handshake.
 </p>
 
 <div class="flow">
@@ -441,6 +547,122 @@ party:Emit("Say", id, "anyone want to run this?")</code></pre>
 		<span class="flow__arrow">&rarr;</span>
 		<span class="flow__box flow__box--brand">each member's On handler</span>
 	</div>
+</div>
+
+<h3>Losing access takes a player out of every room</h3>
+
+<p>
+	However an approved player loses access, by handshaking again and being turned away or
+	by the server calling <code>Revoke</code>, they are taken out of every room on the
+	carrier. They are also unsubscribed from every staged table the carrier holds, and
+	their client is told to let those mirrors go.
+</p>
+
+<p>
+	The two routes differ on who they touch. A guard that turns away a client it had never
+	approved changes nothing, because there was no approval to take back. <code>Revoke</code>
+	is blunter: it empties every player you name out of every room and off every staged
+	table, approved or not. Only the number it returns cares who was actually in.
+</p>
+
+<p>
+	That distinction matters because a room can hold an unapproved player. Installing a
+	guard does not empty your rooms, so a room built before <code>UseHandshake</code> keeps
+	members nobody has approved, and <code>Revoke</code> is what takes them out.
+</p>
+
+<p>
+	Rooms do not come back on their own. Being approved again gets the channel back, not
+	the room. Put them back with
+	<a href="../api/carrier.html#joinroom"><code>JoinRoom</code></a> if you want them
+	there.
+</p>
+
+<h3>Handshake first, then room</h3>
+
+<p>
+	The rule fixes the order you have to work in. You cannot queue a player into a room and
+	let them handshake later, so the room join has to happen after the guard has said yes.
+</p>
+
+<p>
+	Do not try to do it inside the guard either. While your guard is still running the
+	player is not marked approved yet, so <code>JoinRoom</code> would error, and an erroring
+	guard counts as a refusal. You would turn away the player you were trying to add.
+</p>
+
+<p>
+	The way through is to let the client tell you it is in. Nothing an unapproved client
+	sends reaches a listener, so a handler on a guarded carrier only ever runs for a player
+	who has already passed.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local match = Pigeon.new("Match")
+
+local ticketOf = {}   -- Player -> RoomID, filled by your matchmaker
+
+match:UseHandshake(function(player, id)
+	-- Judge them only. Do not touch rooms in here.
+	local wanted = ticketOf[player]
+	return wanted ~= nil and wanted == id
+end)
+
+-- Only an approved client can reach this handler, so the join cannot be refused.
+match:On("Ready", function(player)
+	local id = ticketOf[player]
+	if not id then
+		return
+	end
+
+	match:JoinRoom(id, player)
+	match:SendToRoom(id, "Joined", player.Name)
+end)
+
+match:On("Say", function(player, text)
+	local id = ticketOf[player]
+	if id then
+		match:SendToRoom(id, "Message", player.Name, text)
+	end
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local match = Pigeon.new("Match")
+
+match:On("Joined", function(name) print(name .. " joined") end)
+match:On("Message", function(name, text) print(name .. ": " .. text) end)
+
+-- Handlers, then the inbound side, then ask to be let in.
+match:Init()
+
+if match:Handshake(myTicket) then
+	-- Now the server can put me in the room.
+	match:Emit("Ready")
+end</code></pre>
+</div>
+
+<p>
+	Written the other way round, with <code>match:JoinRoom(id, player)</code> in the
+	matchmaker that hands out the ticket, that line errors: the player has not handshaked
+	yet.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		If your guard revokes people, the room join has to run again after they are
+		approved again. A client that handshakes a second time is back on the channel but
+		not back in its room until you call <code>JoinRoom</code>.
+	</p>
 </div>
 
 <h2>What rooms do not do</h2>
@@ -471,6 +693,14 @@ party:Emit("Say", id, "anyone want to run this?")</code></pre>
 			<td>A room survives the carrier</td>
 			<td>It does not. <a href="cleanup.html">Destroying the carrier</a> clears every room on it.</td>
 		</tr>
+		<tr>
+			<td>You can put a player in a room before they handshake</td>
+			<td>Not on a guarded carrier. <code>CreateRoom</code> and <code>JoinRoom</code> raise <code>ERR_NOT_APPROVED</code>.</td>
+		</tr>
+		<tr>
+			<td>A player revoked and then approved again is back in their room</td>
+			<td>They are not. Call <a href="../api/carrier.html#joinroom"><code>JoinRoom</code></a> again yourself.</td>
+		</tr>
 	</tbody>
 </table>
 </div>
@@ -479,8 +709,8 @@ party:Emit("Say", id, "anyone want to run this?")</code></pre>
 
 <ul>
 	<li><a href="sending.html">Sending and Receiving</a> for the broadcast methods rooms are built on.</li>
-	<li><a href="handshakes.html">Handshakes</a> for the filter every room send passes through.</li>
-	<li><a href="../api/carrier.html">Carrier</a> for the full method list.</li>
+	<li><a href="handshakes.html">Handshakes</a> for the guard a room member has to pass, and what <code>Revoke</code> takes away.</li>
+	<li><a href="../api/carrier.html#joinroom">Carrier</a> for the full method list.</li>
 </ul>
 
 		</main>

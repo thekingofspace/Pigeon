@@ -169,7 +169,7 @@ print(Pigeon.new("Shop") == shop) --&gt; false</code></pre>
 			<td><code>Timeout</code></td>
 			<td><code>number?</code></td>
 			<td><code>10</code> seconds</td>
-			<td>How long <code>Call</code> and <code>CallTo</code> wait for an answer.</td>
+			<td>How long a request waits for an answer. <code>Call</code>, <code>CallTo</code>, <code>Ping</code>, <code>Handshake</code> and <code>RequestTable</code> all read it.</td>
 		</tr>
 		<tr>
 			<td><code>Transformer</code></td>
@@ -238,9 +238,12 @@ Pigeon.new("Shop", { Transformer = "Combat" })  -- ERR_NO_TRANSFORMER</code></pr
 	<p class="note__title">Warning</p>
 	<p>
 		Because options build a fresh carrier every time, you can end up with two
-		carriers on one name. Incoming messages are routed by name alone, so both of
-		them hear every packet and every listener on both fires. Keep the receiving side
-		to a single carrier per name.
+		carriers on one name. Incoming messages are routed by name alone, so the two
+		share the channel: a packet goes to every carrier that bound its event with
+		<code>On</code>, and every listener they registered for it runs. A carrier that
+		did not bind that event is skipped, its middleware included. Keep the receiving
+		side to a single carrier per name. See
+		<a href="../guide/known-issues.html">Known Issues</a>.
 	</p>
 </div>
 

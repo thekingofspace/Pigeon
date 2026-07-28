@@ -128,6 +128,7 @@ end)</code></pre>
 		<tr><td>Incoming, on the server</td><td>The player who sent the packet.</td></tr>
 		<tr><td>Incoming, on the client</td><td><code>nil</code>. It came from the server.</td></tr>
 		<tr><td>Outgoing, <code>CallTo</code></td><td>The player being asked.</td></tr>
+		<tr><td>Outgoing, <a href="handshakes.html#revoke"><code>Revoke</code></a> or a refused handshake</td><td>The player losing access, on the reserved <code>__pigeon_table_revoke</code> message it sends them.</td></tr>
 		<tr><td>Outgoing, <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code>, <code>SendToRoom</code></td><td><code>nil</code>. One packet is built for the whole list, so there is no single recipient to name.</td></tr>
 		<tr><td>Outgoing, on the client</td><td><code>nil</code>. There is only one place to send to.</td></tr>
 	</tbody>

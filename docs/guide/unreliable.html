@@ -69,9 +69,10 @@ print(positions.Unreliable)   --> true</code></pre>
 	<p>
 		Passing any options table makes a fresh carrier that Pigeon does not cache.
 		Calling <code>Pigeon.new("Positions")</code> somewhere else gives you a
-		different, reliable carrier on the same channel name. Both hear the same
-		packets, so both sets of listeners fire. Hold on to the one you built and pass
-		it around. See <a href="carriers.html">Carriers</a>.
+		different, reliable carrier on the same channel name. The two share the channel,
+		so a packet goes to every carrier that bound its event with <code>On</code> and a
+		handler registered on both fires twice. Hold on to the one you built and pass it
+		around. See <a href="carriers.html">Carriers</a>.
 	</p>
 </div>
 

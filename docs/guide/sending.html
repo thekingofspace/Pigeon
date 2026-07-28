@@ -352,9 +352,9 @@ party:BroadcastTo({ alice }, "Invite", "dungeon-3")</code></pre>
 	<p class="note__title">Careful</p>
 	<p>
 		<code>BroadcastTo</code> wants a table of players. Passing a bare
-		<code>Player</code> errors. <code>BroadcastExcept</code>, <code>JoinRoom</code>
-		and <code>LeaveRoom</code> normalise a single player into a list first, so it is
-		easy to assume this one does too.
+		<code>Player</code> errors. <code>BroadcastExcept</code>, <code>JoinRoom</code>,
+		<code>LeaveRoom</code> and <code>ForceTable</code> normalise a single player into
+		a list first, so it is easy to assume this one does too.
 	</p>
 </div>
 

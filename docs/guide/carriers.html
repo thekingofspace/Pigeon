@@ -187,7 +187,7 @@ print(fresh == shop) --> false</code></pre>
 			<td><code>Timeout</code></td>
 			<td><code>number?</code></td>
 			<td><code>10</code> seconds</td>
-			<td>How long a request waits for an answer before giving up.</td>
+			<td>How long any request on this carrier waits for an answer before giving up.</td>
 		</tr>
 		<tr>
 			<td><code>Transformer</code></td>
@@ -236,9 +236,16 @@ print(fresh == shop) --> false</code></pre>
 <h3>Timeout</h3>
 
 <p>
-	How many seconds <code>Call</code> and <code>CallTo</code> wait for the other side
-	to answer. Leave it out and you get 10 seconds. When the time runs out the call
-	returns <code>nil</code> rather than erroring.
+	How many seconds a request waits for the other side to answer. Leave it out and you
+	get 10 seconds. When the time runs out the call returns <code>nil</code> rather than
+	erroring.
+</p>
+
+<p>
+	It covers every request on the carrier, not just <code>Call</code> and
+	<code>CallTo</code>. <code>Ping</code>, <code>Handshake</code> and
+	<code>RequestTable</code> are each a <code>Call</code> underneath, so they read the
+	same field.
 </p>
 
 <pre><code>local slow = Pigeon.new("Leaderboards", { Timeout = 30 })</code></pre>
@@ -295,10 +302,10 @@ chat.Unreliable = true -- later sends take the lossy lane</code></pre>
 <div class="note note--danger">
 	<p class="note__title">Warning</p>
 	<p>
-		Incoming messages are routed by name alone. Two carriers called "Shop" on the
-		same machine both hear every "Shop" packet, so every listener on both of them
-		fires for every message. If you registered the same handler on each, it runs
-		twice.
+		Incoming messages are routed by name alone, so two carriers called "Shop" on the
+		same machine share the channel. A packet goes to every carrier that bound its
+		event with <code>On</code>, and every listener those carriers registered for it
+		runs. Register the same handler on each and it runs twice.
 	</p>
 </div>
 
@@ -309,6 +316,14 @@ a:On("Sold", print)
 b:On("Sold", print)
 
 -- One broadcast from the server prints twice.</code></pre>
+
+<p>
+	A carrier that did <em>not</em> bind an event is skipped entirely once another carrier
+	on the name has bound it. The listener claims the packet, so the second carrier's
+	incoming <a href="middleware.html">middleware</a> never sees that event either. A
+	packet nothing has bound still reaches all of them. See
+	<a href="known-issues.html">Known Issues</a>.
+</p>
 
 <p>The rule that keeps you out of trouble:</p>
 
@@ -346,7 +361,7 @@ b:On("Sold", print)
 		<tr><td><code>CreateRoom</code>, <code>DestroyRoom</code>, <code>JoinRoom</code>, <code>LeaveRoom</code>, <code>SendToRoom</code></td><td>Group players and send to the group. See <a href="rooms.html">Rooms</a>.</td></tr>
 		<tr><td><code>UseHandshake</code></td><td>Close the channel behind a guard. See <a href="handshakes.html">Handshakes</a>.</td></tr>
 		<tr><td><code>Approved</code></td><td>Narrow a player list to the ones the guard let in.</td></tr>
-		<tr><td><code>Revoke</code></td><td>Take admission back off players and release their staged tables. See <a href="handshakes.html">Handshakes</a>.</td></tr>
+		<tr><td><code>Revoke</code></td><td>Take admission back off players, empty them out of every room, and release the staged tables they were mirroring. See <a href="handshakes.html">Handshakes</a>.</td></tr>
 		<tr><td><code>CaptureTable</code>, <code>ReleaseTable</code>, <code>ForceTable</code></td><td>Publish staged tables. See <a href="staged-tables.html">Staged Tables</a>.</td></tr>
 	</tbody>
 </table>

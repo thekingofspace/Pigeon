@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Handshakes | Pigeon</title>
-<meta name="description" content="A handshake locks a carrier so only the clients your guard approves can send on it or hear it, and Revoke throws one back off.">
+<meta name="description" content="A handshake locks a carrier so only the clients your guard approves can send on it, hear it or be put in a room on it, and Revoke throws one back off.">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
 </head>
@@ -18,10 +18,11 @@
 
 <p class="lead">
 	A handshake locks a channel. You install a guard on the server, and until that guard
-	says yes to a client, the client cannot send on the channel and cannot hear anything
-	on it. That is what makes a moderator only channel safe to shout on. When somebody
-	should not be there any more, <a href="#revoke"><code>Revoke</code></a> puts them back
-	outside without waiting for them to ask again.
+	says yes to a client, the client cannot send on the channel, cannot hear anything on
+	it, and cannot be put in a <a href="rooms.html">room</a> on it. That is what makes a
+	moderator only channel safe to shout on. When somebody should not be there any more,
+	<a href="#revoke"><code>Revoke</code></a> puts them back outside without waiting for
+	them to ask again.
 </p>
 
 <h2>The model</h2>
@@ -64,6 +65,10 @@
 			<td>Same filter, even if they are in the <a href="rooms.html">room</a>.</td>
 		</tr>
 		<tr>
+			<td>Server <code>CreateRoom</code> / <code>JoinRoom</code></td>
+			<td>Naming them errors with <code>ERR_NOT_APPROVED</code>, and nobody in that call is added.</td>
+		</tr>
+		<tr>
 			<td>Server <code>CallTo</code></td>
 			<td>Returns <code>nil</code> straight away without sending anything.</td>
 		</tr>
@@ -94,9 +99,10 @@
 </div>
 
 <p>
-	The server can take an approval back at any time with <a href="#revoke"><code>Revoke</code></a>.
-	It clears that client's mark on the spot, so they drop back to every row in the table
-	above without waiting to handshake again.
+	An approval is not permanent. A guard that says no on a later attempt takes it back, and
+	so does <a href="#revoke"><code>Revoke</code></a>, which does not wait for the client to
+	ask. Either way that client drops straight back to every row in the table above. What
+	else it clears is under <a href="#losing-access">Losing access</a>.
 </p>
 
 <h2>One handshake, step by step</h2>
@@ -121,6 +127,77 @@
 		<span class="flow__box flow__box--brand">Handshake returns true</span>
 	</div>
 </div>
+
+<h2>Handshake first, then rooms</h2>
+
+<p>
+	A <a href="rooms.html">room</a> on a guarded carrier may only hold players the guard has
+	approved. <code>CreateRoom</code> and <code>JoinRoom</code> check every player you name,
+	and if one of them has not passed, the call errors:
+</p>
+
+<pre><code>ERR_NOT_APPROVED | Kestrel has not passed the handshake, so cannot be put in room 'alerts'.</code></pre>
+
+<p>
+	The message names the player and the room. Everyone named is checked before a single one
+	is added, so a refused call changes nothing at all: name one approved player and one who
+	is not and neither goes in, and a refused <code>CreateRoom</code> leaves no empty room
+	behind. Only the two calls that put players into a room check.
+	<code>LeaveRoom</code>, <code>DestroyRoom</code> and <code>SendToRoom</code> are
+	unchanged, and a carrier with no guard takes anybody, exactly as it always did.
+</p>
+
+<p>
+	A room on a guarded channel is a list of people allowed to hear something. Somebody who
+	cannot pass the guard is filtered out of every send anyway, so putting them in builds
+	state that can never do anything. Failing at the call says so, instead of leaving you a
+	room that quietly does nothing.
+</p>
+
+<p>
+	So the order is: let the client handshake, then put it in rooms. The simplest way is to
+	join them from a listener, because nothing an unapproved client sends reaches one.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>mods:UseHandshake(function(player, token)
+	return isModerator(player) and token == tokenFor(player)
+end)
+
+-- Too early. Nobody has handshaked yet, so this throws ERR_NOT_APPROVED.
+Players.PlayerAdded:Connect(function(player)
+	mods:JoinRoom("alerts", player)
+end)
+
+-- In time. A listener only runs for a client the guard let in.
+mods:On("Ready", function(player)
+	mods:JoinRoom("alerts", player)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>if mods:Handshake(myToken) then
+	mods:Emit("Ready")
+end</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not call <code>JoinRoom</code> from inside the guard itself. A player is only
+		marked approved after your guard has returned <code>true</code>, so a join in there
+		always errors with <code>ERR_NOT_APPROVED</code>.
+	</p>
+</div>
+
+<p>
+	Installing a guard does not empty your rooms. It clears the approved list and leaves
+	every room exactly as it was, so a room built before <code>UseHandshake</code> keeps
+	members that nobody has approved. They are filtered out of every send, and
+	<code>JoinRoom</code> will not take them anywhere new until they handshake again.
+</p>
 
 <h2>The methods</h2>
 
@@ -285,9 +362,10 @@ local some = mods:Approved(partyMembers)</code></pre>
 </div>
 
 <p>
-	Throws one player or a list of them off the channel now. It clears their approval and
-	makes them let go of every staged table they were mirroring from this carrier. You do
-	not have to wait for them to handshake again, and they are not asked.
+	Throws one player or a list of them off the channel now. It clears their approval, takes
+	them out of every room on this carrier, and makes them let go of every staged table they
+	were mirroring from it. You do not have to wait for them to handshake again, and they
+	are not asked.
 </p>
 
 <div class="table-wrap">
@@ -322,126 +400,9 @@ print(count .. " of them were on the channel")</code></pre>
 	<a href="cleanup.html">dropped</a> carrier it does nothing and returns <code>0</code>.
 </p>
 
-<h4>What the revoked client loses</h4>
-
-<div class="table-wrap">
-<table>
-	<thead>
-		<tr><th>What they had</th><th>After <code>Revoke</code></th></tr>
-	</thead>
-	<tbody>
-		<tr>
-			<td>A place in <code>Approved</code></td>
-			<td>Gone. <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code> and <code>SendToRoom</code> all skip them, and <code>CallTo</code> returns <code>nil</code> without sending.</td>
-		</tr>
-		<tr>
-			<td>The right to send</td>
-			<td>Gone. Their <code>Emit</code> and <code>Call</code> are dropped at the door, before any listener or incoming middleware runs.</td>
-		</tr>
-		<tr>
-			<td>A mirror of a <a href="staged-tables.html">staged table</a> on this carrier</td>
-			<td>Dropped from the carrier's cache and marked released. It stops updating.</td>
-		</tr>
-		<tr>
-			<td>A place in a <a href="rooms.html">room</a></td>
-			<td>Untouched. They stay in every room they were in.</td>
-		</tr>
-	</tbody>
-</table>
-</div>
-
-<div class="flow">
-	<p class="flow__label">Server throws a client out</p>
-	<div class="flow__row">
-		<span class="flow__box flow__box--brand">mods:Revoke(player)</span>
-		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box">their approval is cleared</span>
-	</div>
-	<div class="flow__row">
-		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box">taken off every staged table on the carrier</span>
-		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box">__pigeon_table_revoke names those ids</span>
-	</div>
-	<div class="flow__row">
-		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box">the client drops those mirrors</span>
-		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box flow__box--brand">Revoke returns how many were in</span>
-	</div>
-</div>
-
-<h4>The staged tables let go on their own</h4>
-
 <p>
-	For every staged table on the carrier that the player was subscribed to,
-	<code>Revoke</code> takes them off the subscriber list and remembers the id. If there
-	was at least one, it sends them a single reserved message,
-	<code>__pigeon_table_revoke</code>, naming those ids. That one goes straight down the
-	transport rather than through <code>BroadcastTo</code>, because the player has just
-	stopped being approved and <code>BroadcastTo</code> would filter them out.
-</p>
-
-<p>
-	On the client each named mirror is dropped from the carrier's cache and marked
-	released. Its release hook is cleared first, so the client does not report back
-	something the server has already done.
-</p>
-
-<div class="note">
-	<p class="note__title">Note</p>
-	<p>
-		This is the only thing <code>Revoke</code> sends. If the player held no mirror
-		from this carrier, nothing goes over the wire at all. Nobody is ever told they
-		lost the channel, exactly as when a guard is replaced.
-	</p>
-</div>
-
-<h4>It only blocks sending when a guard is installed</h4>
-
-<p>
-	<code>Approved</code> filters only when there is a guard, and every send runs through
-	<code>Approved</code>. So on a carrier with no <code>UseHandshake</code>,
-	<code>Revoke</code> stops nothing: the player keeps hearing every broadcast and can
-	still <code>Emit</code>. It does release their staged tables, and it returns
-	<code>0</code>.
-</p>
-
-<div class="note note--warn">
-	<p class="note__title">Careful</p>
-	<p>
-		<code>Revoke</code> on an open channel is not a mute. If you want it to shut
-		somebody out, the carrier needs a guard.
-	</p>
-</div>
-
-<h4>What they already received stays received</h4>
-
-<p>
-	<code>Revoke</code> cuts off the future. It cannot reach into a client's memory. Every
-	value they were sent before the call is still there, including the last copy of any
-	staged table they were mirroring. Do not treat it as making sent data secret again. If
-	something must never be seen, do not send it.
-</p>
-
-<h4>They can come back</h4>
-
-<p>
-	It is not a ban. The client can call <code>Handshake</code> again whenever it likes
-	and your guard judges it afresh. Approve it and the channel opens again, and a new
-	<code>RequestTable</code> for a released id fetches a fresh mirror with a fresh
-	snapshot.
-</p>
-
-<p>
-	Rooms do not come back on their own. Losing access takes the player out of every
-	room on the carrier, so if you want them back in one after they are approved
-	again, put them back with <code>JoinRoom</code>.
-</p>
-
-<p>
-	If you want the removal to stick, the guard has to say no. Keep the decision in your
-	own state and read it from inside the guard.
+	What it costs the client, down to the wire, is under
+	<a href="#losing-access">Losing access</a>.
 </p>
 
 <h2>The guard runs on every attempt</h2>
@@ -457,11 +418,10 @@ print(count .. " of them were on the channel")</code></pre>
 </p>
 
 <p>
-	<strong>A later failure takes access away.</strong> If an approved client
-	handshakes again and the guard returns false this time, they are shut out again.
-	That is one of the two ways a single client loses access. The other is the server
-	calling <a href="#revoke"><code>Revoke</code></a>, which does not wait for the client
-	to ask. To shut everyone out at once, install a new guard.
+	<strong>A later failure takes access away.</strong> If an approved client handshakes
+	again and the guard returns false this time, they are shut out again, exactly as if you
+	had called <a href="#revoke"><code>Revoke</code></a>. See
+	<a href="#losing-access">Losing access</a> for what that clears.
 </p>
 
 <p>
@@ -470,19 +430,6 @@ print(count .. " of them were on the channel")</code></pre>
 	approval the player already had goes too. The alternative would be worse: the
 	client is told it was refused while the server still counts it as approved, and the
 	two sides disagree about who is allowed in.
-</p>
-
-<p>
-	<strong>Losing access clears the player out.</strong> However they lose it, by a
-	guard saying no or by <a href="#revoke"><code>Revoke</code></a>, an approved player
-	is taken out of every room on the carrier and unsubscribed from every staged table
-	it holds, and their client is told to let those mirrors go. Nothing on the channel
-	is left pointing at them.
-</p>
-
-<p>
-	A client that was never approved is not touched, because there is nothing to take
-	away. It already receives nothing: the guard filters it out of every send.
 </p>
 
 <div class="note note--warn">
@@ -525,6 +472,143 @@ game:GetService("Players").PlayerRemoving:Connect(function(player)
 end)</code></pre>
 </div>
 
+<h2>Losing access</h2>
+
+<p>
+	An approved player loses access in one of two ways: your guard answers no on a later
+	<code>Handshake</code>, an error in it counting as no, or the server calls
+	<a href="#revoke"><code>Revoke</code></a>. Both clear the same things. To shut everyone
+	out at once, <a href="#replacing-a-guard">replace the guard</a> instead.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What they had</th><th>After they lose access</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>A place in <code>Approved</code></td>
+			<td>Gone. <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code> and <code>SendToRoom</code> all skip them, and <code>CallTo</code> returns <code>nil</code> without sending.</td>
+		</tr>
+		<tr>
+			<td>The right to send</td>
+			<td>Gone. Their <code>Emit</code> and <code>Call</code> are dropped at the door, before any listener or incoming middleware runs.</td>
+		</tr>
+		<tr>
+			<td>A place in a <a href="rooms.html">room</a></td>
+			<td>Gone from every room on the carrier. <code>JoinRoom</code> will not put them back until they are approved again.</td>
+		</tr>
+		<tr>
+			<td>A mirror of a <a href="staged-tables.html">staged table</a> on this carrier</td>
+			<td>Taken off the subscriber list, then dropped from the client's cache and marked released. It stops updating.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="flow">
+	<p class="flow__label">A player loses access</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">the guard says no, or mods:Revoke(player)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">their approval is cleared</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">taken out of every room on the carrier</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">taken off every staged table on it</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">__pigeon_table_revoke names those ids</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">the client drops those mirrors</span>
+	</div>
+</div>
+
+<p>
+	Only somebody who was in loses anything to a refusal. A guard turning away a client that
+	was never approved touches nothing, because there is nothing to take away, and that
+	client already receives nothing. <code>Revoke</code> is blunter: it clears the rooms and
+	staged tables of every player you name, in or not. Only its return value cares who was
+	actually in.
+</p>
+
+<h4>The staged tables let go on their own</h4>
+
+<p>
+	For every staged table on the carrier the player was subscribed to, they come off the
+	subscriber list and the id is remembered. If there was at least one, they are sent a
+	single reserved message, <code>__pigeon_table_revoke</code>, naming those ids. That one
+	goes straight down the transport rather than through <code>BroadcastTo</code>, because
+	the player has just stopped being approved and <code>BroadcastTo</code> would filter
+	them out.
+</p>
+
+<p>
+	On the client each named mirror is dropped from the carrier's cache and marked
+	released. Its release hook is cleared first, so the client does not report back
+	something the server has already done.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		That message is the only thing sent. If the player held no mirror from this carrier,
+		nothing goes over the wire at all. Nobody is told they lost the channel unless they
+		asked: a <code>Handshake</code> that fails answers <code>false</code>, and
+		<code>Revoke</code> says nothing.
+	</p>
+</div>
+
+<h4>Revoke only shuts somebody out when a guard is installed</h4>
+
+<p>
+	<code>Approved</code> filters only when there is a guard, and every send runs through
+	<code>Approved</code>. So on a carrier with no <code>UseHandshake</code>,
+	<code>Revoke</code> stops nothing: the player keeps hearing every broadcast and can
+	still <code>Emit</code>. It does take them out of every room and release their staged
+	tables, and it returns <code>0</code>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>Revoke</code> on an open channel is not a mute. If you want it to shut
+		somebody out, the carrier needs a guard.
+	</p>
+</div>
+
+<h4>What they already received stays received</h4>
+
+<p>
+	Losing access cuts off the future. Neither route can reach into a client's memory. Every
+	value they were sent before is still there, including the last copy of any staged table
+	they were mirroring. Do not treat it as making sent data secret again. If something must
+	never be seen, do not send it.
+</p>
+
+<h4>They can come back</h4>
+
+<p>
+	None of it is a ban. The client can call <code>Handshake</code> again whenever it likes
+	and your guard judges it afresh. Approve it and the channel opens again, and a new
+	<code>RequestTable</code> for a released id fetches a fresh mirror with a fresh
+	snapshot.
+</p>
+
+<p>
+	Rooms do not come back on their own. Being approved again puts nobody back in a room, so
+	if you want them in one, call <code>JoinRoom</code> once they are through.
+</p>
+
+<p>
+	If you want the removal to stick, the guard has to say no. Keep the decision in your
+	own state and read it from inside the guard.
+</p>
+
 <h2>Replacing a guard</h2>
 
 <p>
@@ -553,10 +637,11 @@ mods:UseHandshake(newRules)  -- everyone is out again</code></pre>
 </div>
 
 <p>
-	Replacing a guard clears the approved list, so patches stop reaching those clients
-	like any other broadcast. It does not take them off any staged table though, and it
-	does not release their mirrors. The copies they hold just go stale.
-	<a href="#revoke"><code>Revoke</code></a> is the call that makes a client let go.
+	Replacing a guard clears the approved list and nothing else. Patches stop reaching those
+	clients like any other broadcast, but rooms keep their members, staged table
+	subscriptions stand, and the mirrors clients hold just go stale.
+	<a href="#revoke"><code>Revoke</code></a> is the call that empties a player out of all of
+	it. Until they handshake again, <code>JoinRoom</code> will not take them either.
 </p>
 
 <p>
@@ -679,7 +764,8 @@ local function demote(player)
 	-- Change this first. The guard reads it, so a fresh Handshake now fails too.
 	rank[player] = "player"
 
-	-- Clears their approval and releases their mirror of report_queue.
+	-- Clears their approval, takes them out of every room on this carrier,
+	-- and releases their mirror of report_queue.
 	local removed = mods:Revoke(player)
 
 	if removed == 1 then
@@ -727,7 +813,7 @@ end
 	<tbody>
 		<tr>
 			<td>A player leaves and rejoins</td>
-			<td>Their approval is dropped when they leave. They must handshake again.</td>
+			<td>Their approval is dropped when they leave, and they are taken out of every room. They must handshake again.</td>
 		</tr>
 		<tr>
 			<td>The guard returns a truthy value that is not <code>true</code></td>
@@ -747,15 +833,19 @@ end
 		</tr>
 		<tr>
 			<td>You <a href="#revoke">revoke</a> somebody who was never approved</td>
-			<td>They do not count towards the return value. Any staged table they were still on the list for is dropped anyway.</td>
+			<td>They do not count towards the return value. They still come out of every room, and any staged table they were on the list for is dropped anyway.</td>
 		</tr>
 		<tr>
 			<td>You revoke the same player twice</td>
 			<td>The second call returns <code>0</code>. There is nothing left to clear.</td>
 		</tr>
 		<tr>
-			<td>You revoke a player who is in a room</td>
-			<td>They are taken out of every room on the carrier. Put them back with <code>JoinRoom</code> if they are approved again.</td>
+			<td>You name an unapproved player in <code>CreateRoom</code> or <code>JoinRoom</code></td>
+			<td>The call errors with <code>ERR_NOT_APPROVED</code> and nobody in it is added.</td>
+		</tr>
+		<tr>
+			<td>A room built before you installed the guard</td>
+			<td>It keeps its members. They hear nothing until they handshake, because every send filters.</td>
 		</tr>
 	</tbody>
 </table>
@@ -770,6 +860,7 @@ end
 <h2>What to read next</h2>
 
 <ul>
+	<li><a href="rooms.html">Rooms</a> for the lists only an approved player can be put in.</li>
 	<li><a href="middleware.html">Middleware</a> for shaping messages that already got past the guard.</li>
 	<li><a href="startup.html">Startup and Buffering</a> for what is queued and what is not.</li>
 	<li><a href="staged-tables.html">Staged Tables</a> for the mirrors <code>Revoke</code> makes a client let go of.</li>
