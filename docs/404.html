@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" data-base="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found | Pigeon</title>
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="/assets/style.css" id="css">
+<link rel="icon" href="/assets/logo.svg" type="image/svg+xml" id="ico">
+</head>
+<body class="is-home">
+
+<script>
+	(function () {
+		var parts = window.location.pathname.split("/").filter(Boolean);
+		/* A project site lives under /<repo>/. A user site lives at the root. */
+		var base = "/";
+		if (parts.length > 0 && parts[0] !== "assets" && parts[0] !== "guide" && parts[0] !== "api") {
+			base = "/" + parts[0] + "/";
+		}
+		document.documentElement.setAttribute("data-base", base);
+		document.getElementById("css").href = base + "assets/style.css";
+		document.getElementById("ico").href = base + "assets/logo.svg";
+		window.__PIGEON_404_BASE = base;
+	})();
+</script>
+
+<div class="layout">
+	<div class="home">
+		<section class="hero">
+			<h1 class="hero__name" style="font-size:80px">404</h1>
+			<p class="hero__tagline">This page flew off somewhere.</p>
+			<p class="hero__text">
+				The address does not match anything in the documentation. It may have been
+				renamed, or the link that brought you here may be out of date.
+			</p>
+			<div class="hero__actions">
+				<a class="button button--primary" id="home-link" href="/">Documentation home</a>
+				<a class="button button--ghost" id="guide-link" href="/guide/index.html">Start reading</a>
+			</div>
+			<p class="hero__text" style="margin-top:26px;font-size:15px">
+				You can also press <kbd>Ctrl</kbd> and <kbd>K</kbd> to search.
+			</p>
+		</section>
+	</div>
+</div>
+
+<script>
+	(function () {
+		var base = window.__PIGEON_404_BASE || "/";
+		document.getElementById("home-link").href = base + "index.html";
+		document.getElementById("guide-link").href = base + "guide/index.html";
+
+		var nav = document.createElement("script");
+		nav.src = base + "assets/nav.js";
+		nav.onload = function () {
+			var site = document.createElement("script");
+			site.src = base + "assets/site.js";
+			document.body.appendChild(site);
+		};
+		document.body.appendChild(nav);
+	})();
+</script>
+</body>
+</html>

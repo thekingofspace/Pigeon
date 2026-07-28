@@ -1,0 +1,1016 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network | Pigeon</title>
+<meta name="description" content="API reference for Pigeon.Network, the low level transport that carriers are built on: the ref pool, raw sends, requests and diagnostics.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Network</h1>
+
+<p class="lead">
+	<code>Pigeon.Network</code> is the transport under everything else. It owns the pool
+	of RemoteEvents, routes packets by name, holds anything that arrives too early, and
+	times out requests.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		This is the layer carriers are built on, and most games never touch it. It is
+		documented because it is public, and because it is the right place to look when
+		something is not arriving. If you are writing game code, use a
+		<a href="carrier.html">Carrier</a> instead.
+	</p>
+</div>
+
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local Network = Pigeon.Network</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Nothing in <code>Network</code> checks which side you are on. There is no
+		<code>ERR_NOT_SERVER</code> here, and no matching guard for the client. Used on
+		the wrong side you get whatever Roblox does with a RemoteEvent used the wrong way
+		round, or a packet that quietly goes nowhere. <code>Push</code>,
+		<code>Call</code> and <code>Ready</code> reach <code>FireServer</code>, which only
+		works from a client. The badges below say where each call belongs.
+	</p>
+</div>
+
+<h2>What a packet looks like</h2>
+
+<p>
+	Every ref carries four kinds of packet. The first value of the fire says which kind it
+	is, and the second is always the uuid of the transformer it belongs to.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Kind</th><th>Values on the wire</th><th>Raised by</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>"push"</code></td><td><code>kind, transformerId, event, data</code></td><td><code>Push</code>, <code>Broadcast</code></td></tr>
+		<tr><td><code>"call"</code></td><td><code>kind, transformerId, event, promiseId, data</code></td><td><code>Call</code>, <code>BroadcastCall</code></td></tr>
+		<tr><td><code>"respond"</code></td><td><code>kind, transformerId, promiseId, data</code></td><td><code>Respond</code></td></tr>
+		<tr><td><code>"auth"</code></td><td><code>kind, transformerId, channel</code></td><td><code>Ready</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>Event names and channels</h3>
+
+<p>
+	Routing is by event name alone. A carrier scopes its events by putting its own name, a
+	NUL byte and then the event name, so event <code>Buy</code> on carrier
+	<code>Shop</code> travels as <code>"Shop\0Buy"</code>.
+</p>
+
+<p>
+	The <em>channel</em> is whatever comes before that NUL byte, or the whole name when
+	there is no NUL. The channel is what buffering is keyed on. A client only receives on
+	a channel it has readied, so if you send with a bare name like <code>"Update"</code>,
+	the client has to call <code>Ready(transformer, "Update")</code> to hear it.
+</p>
+
+<div class="flow">
+	<p class="flow__label">A request at this level</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">Network.Call</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">ref ready, or held</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">FireServer</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">routed by event name</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">your Receive callback</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">Network.Respond</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">Call returns</span>
+	</div>
+</div>
+
+<h2>Properties</h2>
+
+<h3>KnownTransformers</h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.KnownTransformers: number</code></pre>
+</div>
+
+<p>
+	How many transformers this machine has made and not destroyed.
+	<code>Register</code> adds one, <code>Unregister</code> takes one away, and it never
+	drops below zero.
+</p>
+
+<p>
+	On the server this is the number the pool size is worked out from. On the client it is
+	counted but never used for sizing, because the client takes the pool size from the
+	<code>RefCount</code> attribute the server publishes.
+</p>
+
+<pre><code>print(Network.KnownTransformers) --&gt; 12</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		It is a plain field, so nothing stops you writing to it. Do not. On the server it
+		decides how many RemoteEvents exist and which bucket every uuid lands on.
+	</p>
+</div>
+
+<h2>The ref pool</h2>
+
+<p>
+	A <em>ref</em> is one pooled RemoteEvent, and a <em>bucket</em> is its slot number in
+	the pool. The <a href="../guide/ref-pool.html">Ref Pool</a> guide explains the whole
+	scheme. These four calls are the parts of it you can reach.
+</p>
+
+<h3>GetRefCount <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.GetRefCount() -> number</code></pre>
+</div>
+
+<p>How many buckets the pool should have right now.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Side</th><th>Where the number comes from</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Server</td>
+			<td><code>math.clamp(math.ceil(KnownTransformers / 16), 1, 32)</code>. One ref per 16 transformers, at least 1 and at most 32.</td>
+		</tr>
+		<tr>
+			<td>Client</td>
+			<td>The <code>RefCount</code> attribute on the <code>PigeonRefs</code> folder. If the folder or the attribute is not there yet, the answer is 1.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> the count. It never yields and it takes no arguments.</p>
+
+<pre><code>print(Network.GetRefCount()) --&gt; 3</code></pre>
+
+<p>
+	The client's fallback of 1 is the safe answer, because bucket 1 always exists. Both
+	sides read this fresh every time they pick a bucket, so during the moment the
+	attribute is replicating the two machines can briefly disagree. Nothing is lost when
+	that happens. Packets still route by name, whichever ref they came in on.
+</p>
+
+<h3>GetRef <span class="badge badge--shared">Shared</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.GetRef(transformer: Transformer) -> RemoteEvent</code></pre>
+</div>
+
+<p>
+	Returns the reliable RemoteEvent a transformer's traffic rides on. The uuid is hashed
+	and folded into the current pool size to pick the bucket.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>The transformer to resolve. Only its <code>uuid</code> is read.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> the RemoteEvent for that bucket.</p>
+
+<pre><code>local transformer = Pigeon.Transformer("Combat")
+local ref = Network.GetRef(transformer)
+
+print(ref.Name) --&gt; PigeonRef_2</code></pre>
+
+<p>
+	On the server it creates the ref if it does not exist yet. On the client it yields
+	until the <code>PigeonRefs</code> folder and that ref have replicated. There is no
+	timeout on the wait.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Only the reliable ref comes back. The unreliable twin is not returned. It sits
+		beside it in the same folder under the same number, named
+		<code>PigeonRefU_2</code> for the example above.
+	</p>
+</div>
+
+<p>
+	Do not cache what you get. The bucket is worked out from the pool size at the moment
+	you ask, so it can move when the pool grows or shrinks.
+	<code>Pigeon.GetRef(transformer)</code> is the same call under a shorter name.
+</p>
+
+<h3>Register <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Register(transformer: Transformer) -> ()</code></pre>
+</div>
+
+<p>
+	Counts a transformer as known. Pigeon calls it in the transformer constructor, so you
+	never have to.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>The transformer entering the count.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<p>
+	On the server it adds one to <code>KnownTransformers</code>, works out the new pool
+	size, creates every ref up to it, writes the <code>RefCount</code> attribute, then
+	resolves the ref for this transformer. On the client it only adds one to the count.
+	Clients never create refs.
+</p>
+
+<pre><code>local before = Network.KnownTransformers
+
+-- Pigeon.Transformer calls Register for you.
+local transformer = Pigeon.Transformer("Combat")
+print(Network.KnownTransformers) --&gt; before + 1
+
+-- Calling it yourself counts the same transformer a second time.
+Network.Register(transformer)
+print(Network.KnownTransformers) --&gt; before + 2</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Calling this yourself counts the same transformer twice. Sixteen extra counts push
+		the server's pool one ref bigger than it needs to be, and only a matching
+		<code>Unregister</code> brings the count back down.
+	</p>
+</div>
+
+<h3>Unregister <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Unregister(transformer: Transformer) -> ()</code></pre>
+</div>
+
+<p>
+	Takes one off the count and, on the server, republishes the pool size.
+	<code>transformer:Destroy()</code> calls it for you.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>Ignored. Only the count changes.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>-- Undo the extra count from the Register example.
+Network.Unregister(transformer)
+print(Network.KnownTransformers) --&gt; before + 1
+
+-- Destroy calls Unregister for you, so the count lands back where it started.
+transformer:Destroy()
+print(Network.KnownTransformers) --&gt; before</code></pre>
+
+<p>
+	The argument really is ignored, so passing the wrong transformer, or the same one
+	twice, has exactly the same effect as passing the right one. Nothing is verified. The
+	count is floored at zero.
+</p>
+
+<p>
+	Refs that already exist are never deleted. A pool that grew to 7 and then dropped back
+	to 5 still has seven RemoteEvents in the folder. The last two simply stop being chosen
+	until the count climbs again.
+</p>
+
+<h2>Listening</h2>
+
+<h3>Receive <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Receive(event: string, callback: (...any) -> ()) -> () -> ()</code></pre>
+</div>
+
+<p>Hooks a callback onto a wire event name. Returns a function that disconnects it.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The name as it travels, including the carrier prefix if there is one.</td></tr>
+		<tr><td><code>callback</code></td><td><code>(...any) -> ()</code></td><td>Runs for every packet with that name.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a disconnect function. Calling it twice is harmless.</p>
+
+<p>What the callback is handed depends on the side:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Side</th><th>Arguments</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Server</td><td><code>player, transformerId, data, promiseId?</code></td></tr>
+		<tr><td>Client</td><td><code>transformerId, data, promiseId?</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>promiseId</code> is only there when the packet was a request. Pass it to
+	<code>Respond</code> to answer.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local stop = Network.Receive("Shop\0Buy", function(player, transformerId, data, promiseId)
+	print(player.Name, "sent Buy")
+end)
+
+-- Later.
+stop()</code></pre>
+</div>
+
+<h4>Details worth knowing</h4>
+
+<ul>
+	<li>Routing is by name only. Every packet with that name reaches you, whichever ref it came in on and whatever transformer sent it.</li>
+	<li>Anything that arrived for this name while nothing was listening is replayed to your callback, in order, the moment you subscribe. Those held packets expire after 10 seconds.</li>
+	<li>Each callback runs in its own <code>task.spawn</code>, so yielding inside one does not hold up the others.</li>
+	<li>There is no <code>pcall</code> around it. An error in your callback shows up in the output as an unhandled error and does not reach the sender.</li>
+	<li>Register the same function twice and you have to disconnect twice. Each call removes one entry.</li>
+</ul>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		<code>data</code> is the raw payload. A carrier packs its arguments into one table
+		with an <code>n</code> field, so listening to a carrier's traffic here gives you
+		that table rather than the arguments themselves, and the carrier's middleware does
+		not run.
+	</p>
+</div>
+
+<h3>ReceiveChannel <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.ReceiveChannel(channel: string, callback: (event: string, ...any) -> ()) -> () -> ()</code></pre>
+</div>
+
+<p>
+	Watches a whole channel instead of one name on it. The callback is handed every packet
+	on that channel that no <code>Receive</code> listener claimed, with the wire event name
+	in front of the usual arguments. Returns a function that disconnects it.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>channel</code></td><td><code>string</code></td><td>The channel name, which is the part of a wire name before the separator.</td></tr>
+		<tr><td><code>callback</code></td><td><code>(event, ...any) -> ()</code></td><td>Runs for each unclaimed packet. <code>event</code> is the full wire name.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a disconnect function. Calling it twice is harmless.</p>
+
+<p>
+	After the event name the callback gets exactly what a <code>Receive</code> callback
+	would have got for that packet: <code>player, transformerId, data, promiseId?</code> on
+	the server, and the same list without the player on the client.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local stop = Network.ReceiveChannel("Shop", function(event, player, transformerId, data)
+	print(player.Name, "sent", event, "which nothing is bound to")
+end)</code></pre>
+</div>
+
+<h4>Details worth knowing</h4>
+
+<ul>
+	<li>A listener wins. If any <code>Receive</code> callback is bound to the exact wire name, watchers do not run for that packet, so nothing is ever delivered twice.</li>
+	<li>Anything already held for this channel is replayed to your callback the moment you subscribe, the same as <code>Receive</code> does per name.</li>
+	<li>A packet a watcher takes is no longer orphaned. Holding it or dropping it is now your problem, and this is exactly what a carrier does with it.</li>
+	<li>This is how a carrier runs its incoming middleware over events nothing has bound. See <a href="../guide/middleware.html">Middleware</a>.</li>
+</ul>
+
+<h2>Sending</h2>
+
+<h3>Push <span class="badge badge--client">Client</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Push(transformer: Transformer, event: string, data: any, unreliable: boolean?) -> ()</code></pre>
+</div>
+
+<p>Client to server, fire and forget. Never yields.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>Decides which ref the packet leaves on.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The name to raise on the server.</td></tr>
+		<tr><td><code>data</code></td><td><code>any</code></td><td>One payload value. Pack it yourself if you need several.</td></tr>
+		<tr><td><code>unreliable</code></td><td><code>boolean?</code></td><td><code>true</code> takes the lossy twin. Defaults to reliable.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>Network.Push(transformer, "Shop\0Buy", { n = 1, "sword" })</code></pre>
+</div>
+
+<p>
+	If the ref has not replicated yet, the packet is held in the client's outbox and goes
+	out the moment that ref binds. Up to 64 packets are held, oldest dropped first, and
+	each is thrown away after 30 seconds.
+</p>
+
+<p>
+	An unreliable push falls back to the reliable lane when only the reliable ref has
+	replicated. The twin arrives separately, and dropping the packet over a timing detail
+	would be worse than sending it reliably.
+</p>
+
+<h3>Broadcast <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Broadcast(players: {Player}, transformer: Transformer, event: string, data: any, unreliable: boolean?) -> ()</code></pre>
+</div>
+
+<p>Server to the listed players, fire and forget.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>players</code></td><td><code>{Player}</code></td><td>The recipients. No filtering is done for you.</td></tr>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>Decides which ref the packet leaves on.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The name to raise on each client.</td></tr>
+		<tr><td><code>data</code></td><td><code>any</code></td><td>One payload value.</td></tr>
+		<tr><td><code>unreliable</code></td><td><code>boolean?</code></td><td><code>true</code> takes the lossy twin.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>Network.Broadcast(Players:GetPlayers(), transformer, "Shop\0StockChanged", stock)</code></pre>
+</div>
+
+<p>
+	A client that has not readied the channel does not get the packet now. It is buffered
+	and released when that client calls <code>Ready</code> on that channel. The server
+	holds up to 64 packets per client per channel, for 30 seconds, oldest dropped first.
+	Players who have left are skipped, and their queues are dropped.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Unreliable sends are never buffered. If the client has not readied the channel, an
+		unreliable packet is dropped on the spot. A packet that may be lost in transit has
+		no business being replayed a minute later.
+	</p>
+</div>
+
+<h3>Call <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Call(transformer: Transformer, event: string, data: any, timeout: number?) -> (boolean, any)</code></pre>
+</div>
+
+<p>
+	Client to server request. Yields the calling thread until the server responds or the
+	timeout runs out. Always takes the reliable lane.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>Decides which ref the request leaves on.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The name to raise on the server.</td></tr>
+		<tr><td><code>data</code></td><td><code>any</code></td><td>One payload value.</td></tr>
+		<tr><td><code>timeout</code></td><td><code>number?</code></td><td>Seconds to wait. Defaults to 10.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> two values: <code>true</code> and the response data, or
+	<code>false</code> and the string <code>"timeout"</code>.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ok, answer = Network.Call(transformer, "Shop\0Buy", "sword", 5)
+
+if not ok then
+	warn("no answer in 5 seconds")
+	return
+end
+
+print(answer)</code></pre>
+</div>
+
+<p>
+	The clock starts when you call it, not when the packet leaves. Any wait for the ref
+	pool to replicate counts against your timeout, so you never wait longer than you asked
+	for. A held request whose deadline has already passed is thrown away instead of being
+	sent, since there is nobody left to answer it.
+</p>
+
+<h3>Respond <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Respond(transformerId: string, promiseId: string, data: any, player: Player?) -> ()</code></pre>
+</div>
+
+<p>
+	Answers a <code>Call</code> or a <code>BroadcastCall</code>, and resumes the thread
+	waiting on the other side.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformerId</code></td><td><code>string</code></td><td>The uuid string your <code>Receive</code> callback was handed. Not the transformer object.</td></tr>
+		<tr><td><code>promiseId</code></td><td><code>string</code></td><td>The promise id from the same callback.</td></tr>
+		<tr><td><code>data</code></td><td><code>any</code></td><td>The response payload.</td></tr>
+		<tr><td><code>player</code></td><td><code>Player?</code></td><td>Who to answer. Required on the server, ignored on the client.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<p>
+	This is the one call that takes an id string rather than a transformer object.
+	That is on purpose. A reply goes back on whichever ref the request arrived on, so the
+	round trip still works when the two sides are using different transformers.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Side</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Server</td>
+			<td>Fires straight at that player. Never buffered, because the caller is already waiting on it. A player who has left is skipped. Leave <code>player</code> out and it errors.</td>
+		</tr>
+		<tr>
+			<td>Client</td>
+			<td>Sends to the server, through the outbox if the ref is not there yet. This is how a client answers a <code>BroadcastCall</code>.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>Network.Receive("Shop\0Buy", function(player, transformerId, data, promiseId)
+	if not promiseId then
+		return -- A Push, not a Call. Nobody is waiting.
+	end
+
+	Network.Respond(transformerId, promiseId, "sold", player)
+end)</code></pre>
+</div>
+
+<p>Answering a <code>BroadcastCall</code> looks the same, minus the player:</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>Network.Receive("Quiz\0Answer", function(transformerId, data, promiseId)
+	Network.Respond(transformerId, promiseId, "42")
+end)
+
+-- Nothing arrives on this channel until the client asks for it.
+Network.Ready(transformer, "Quiz")</code></pre>
+</div>
+
+<p>
+	Replies always take the reliable lane. If the request already timed out, the reply
+	arrives and is thrown away, because that promise is gone.
+</p>
+
+<h3>BroadcastCall <span class="badge badge--server">Server</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.BroadcastCall(players: {Player}, transformer: Transformer, event: string, data: any, timeout: number?) -> (boolean, any)</code></pre>
+</div>
+
+<p>
+	Server to clients request. Yields until every listed player has answered or timed out,
+	or until one of them leaves. Each player gets their own promise, and all of them share
+	one deadline.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>players</code></td><td><code>{Player}</code></td><td>Who to ask. An empty list returns straight away without yielding.</td></tr>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>Decides which ref the requests leave on.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The name to raise on each client.</td></tr>
+		<tr><td><code>data</code></td><td><code>any</code></td><td>One payload value.</td></tr>
+		<tr><td><code>timeout</code></td><td><code>number?</code></td><td>Seconds to wait. Defaults to 10.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> two values:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>First</th><th>Second</th><th>When</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>true</code></td><td>A map of player to response</td><td>Every player's slot has been filled.</td></tr>
+		<tr><td><code>true</code></td><td><code>{}</code></td><td>You passed an empty player list.</td></tr>
+		<tr><td><code>false</code></td><td><code>"player_left"</code></td><td>One of the listed players left the game first.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A timeout does not make this return <code>false</code>. When a player's request
+		times out, that player's slot is filled with the string <code>"timeout"</code> and
+		it counts as answered. Once every slot is filled the call returns
+		<code>true</code>, with <code>"timeout"</code> sitting in the map where a response
+		should be. Check each entry rather than trusting the first return on its own. If
+		your clients can genuinely answer with the string <code>"timeout"</code>, you
+		cannot tell the two apart.
+	</p>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ok, responses = Network.BroadcastCall(Players:GetPlayers(), transformer, "Quiz\0Answer", question, 5)
+
+if not ok then
+	print("stopped early:", responses) --&gt; player_left
+	return
+end
+
+for player, response in responses do
+	if response == "timeout" then
+		print(player.Name, "never answered")
+	else
+		print(player.Name, "said", response)
+	end
+end</code></pre>
+</div>
+
+<p>
+	Requests go out through the same ready and buffer path as <code>Broadcast</code>, so a
+	client that has not readied the channel gets the request when it does, if that happens
+	inside the buffer window.
+</p>
+
+<h3>Ready <span class="badge badge--client">Client</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Ready(transformer: Transformer, channel: string) -> ()</code></pre>
+</div>
+
+<p>
+	Tells the server this client is listening on a channel, which releases whatever the
+	server has been holding for it there, oldest first. Never yields.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>Decides which ref the readiness packet leaves on.</td></tr>
+		<tr><td><code>channel</code></td><td><code>string</code></td><td>The channel to open. For a carrier this is its name.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>Network.Receive("PlayerData\0Changed", applyPayload)
+
+-- Handlers are in place, so let the backlog through.
+Network.Ready(transformer, "PlayerData")</code></pre>
+</div>
+
+<p>
+	<code>carrier:Init()</code> is this call with the carrier's name. Readying one channel
+	says nothing about any other, so a client can bring its channels up one at a time and
+	each backlog arrives exactly when it is asked for.
+</p>
+
+<h4>How it behaves before the pool exists</h4>
+
+<p>
+	If the ref has not replicated yet, the packet is held and then sent ahead of everything
+	else the client queued behind it. That is the order the channel would have come up in
+	anyway: readiness first, then whatever you sent next.
+</p>
+
+<ul>
+	<li>Duplicates are ignored while held. The same uuid and channel is only queued once.</li>
+	<li>Readiness packets never expire in the outbox. Ordinary traffic does. Dropping one would leave that channel shut for the rest of the session.</li>
+	<li>Readying twice is harmless. The second one flushes an empty queue.</li>
+</ul>
+
+<h2>Checking what is held</h2>
+
+<h3>Diagnostics <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Network.Diagnostics() -> {[string]: number}</code></pre>
+</div>
+
+<p>
+	Counts what the transport is holding right now, on this machine. It is meant for leak
+	checks and tests.
+</p>
+
+<p><strong>Returns</strong> a fresh table of nine numbers. It takes no arguments.</p>
+
+<pre><code>local d = Network.Diagnostics()
+print(d.listeners, d.pending, d.bufferedPackets)</code></pre>
+
+<h4>What each field counts</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Field</th><th>Side</th><th>What it counts</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>listeners</code></td>
+			<td>Both</td>
+			<td>Distinct event names with at least one <code>Receive</code> callback. Two listeners on one name count as one.</td>
+		</tr>
+		<tr>
+			<td><code>watchers</code></td>
+			<td>Both</td>
+			<td><code>ReceiveChannel</code> callbacks, added up across every channel. One per live carrier, so this is a carrier count in practice.</td>
+		</tr>
+		<tr>
+			<td><code>orphaned</code></td>
+			<td>Both</td>
+			<td>Packets held for event names nothing is listening to yet, added up across every name. A channel with a watcher on it does not orphan.</td>
+		</tr>
+		<tr>
+			<td><code>pending</code></td>
+			<td>Both</td>
+			<td>Requests waiting for an answer. A <code>BroadcastCall</code> counts one per player it asked.</td>
+		</tr>
+		<tr>
+			<td><code>readySeats</code></td>
+			<td>Server</td>
+			<td>Channel and player pairs that have declared readiness. Always 0 on a client.</td>
+		</tr>
+		<tr>
+			<td><code>bufferedPackets</code></td>
+			<td>Server</td>
+			<td>Packets held for clients that have not readied a channel. Always 0 on a client.</td>
+		</tr>
+		<tr>
+			<td><code>readyChannels</code></td>
+			<td>Server</td>
+			<td>Channels with at least one ready player.</td>
+		</tr>
+		<tr>
+			<td><code>bufferedChannels</code></td>
+			<td>Server</td>
+			<td>Channels with at least one packet held for somebody.</td>
+		</tr>
+		<tr>
+			<td><code>outbound</code></td>
+			<td>Client</td>
+			<td>Packets in the client's outbox waiting for their ref to replicate. Always 0 on the server.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h4>Reading the numbers</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Field</th><th>Healthy</th><th>A number that keeps climbing means</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>listeners</code></td>
+			<td>Flat once the game is running. Roughly the number of events you bound.</td>
+			<td>Carriers or listeners are being made and never dropped. This is the field a leak shows up in first.</td>
+		</tr>
+		<tr>
+			<td><code>watchers</code></td>
+			<td>Flat, at one per carrier you built and did not destroy.</td>
+			<td>Carriers are being made and never destroyed. Unlike <code>listeners</code> this climbs even for a carrier that binds nothing.</td>
+		</tr>
+		<tr>
+			<td><code>orphaned</code></td>
+			<td>0, or a small blip during startup.</td>
+			<td>Traffic is arriving on a channel with no carrier at all. Once a carrier exists it takes that channel's unclaimed packets itself.</td>
+		</tr>
+		<tr>
+			<td><code>pending</code></td>
+			<td>Back to 0 whenever nothing is mid request.</td>
+			<td>You are issuing requests faster than they settle. It cannot leak, since every entry is settled at its deadline.</td>
+		</tr>
+		<tr>
+			<td><code>readySeats</code></td>
+			<td>About the number of channels a client opens times the players online. It falls as players leave.</td>
+			<td>New channel names are being readied over and over. Usually carriers built with a name that includes a counter or a user id.</td>
+		</tr>
+		<tr>
+			<td><code>bufferedPackets</code></td>
+			<td>0 shortly after each client starts up.</td>
+			<td>You are sending to a channel clients never open. It cannot grow without bound, but every packet in there is a wasted send.</td>
+		</tr>
+		<tr>
+			<td><code>readyChannels</code> and <code>bufferedChannels</code></td>
+			<td>Settle at the number of channels your game has.</td>
+			<td>Channel names are being generated rather than fixed.</td>
+		</tr>
+		<tr>
+			<td><code>outbound</code></td>
+			<td>0 once the <code>PigeonRefs</code> folder has replicated in.</td>
+			<td>The pool has not arrived, or readiness packets are stuck. Those never expire, so they sit there until a ref binds.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h4>Checking for a leak</h4>
+
+<p>
+	Take the numbers, do the thing you suspect, tear it down, then take them again.
+	Everything should come back to where it started.
+</p>
+
+<pre><code>local Network = Pigeon.Network
+
+local before = Network.Diagnostics()
+
+for index = 1, 100 do
+	local carrier = Pigeon.new("Temp" .. index, {})
+	carrier:On("Tick", function() end)
+	carrier:Destroy()
+end
+
+task.wait(1) -- give the heartbeat sweep a chance to run
+
+for field, value in Network.Diagnostics() do
+	if value ~= before[field] then
+		warn(`{field}: {before[field]} -&gt; {value}`)
+	end
+end
+
+print("transformers:", Network.KnownTransformers)</code></pre>
+
+<p>
+	That loop makes 100 uncached carriers, since passing options always builds a fresh one,
+	and each makes and destroys its own transformer. If anything prints, something held on
+	to a listener it should have let go of.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Diagnostics walks every queue it counts, so the cost grows with what is being
+		held. Call it now and then, not every frame.
+	</p>
+</div>
+
+<h2>The numbers behind all this</h2>
+
+<p>
+	These are fixed in the module. You cannot read them or change them from outside, so
+	they are listed here to save you counting.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Name</th><th>Value</th><th>What it controls</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>LOAD_PER_REF</code></td><td>16</td><td>Transformers per RemoteEvent in the pool.</td></tr>
+		<tr><td><code>MAX_REFS</code></td><td>32</td><td>The most RemoteEvents the pool will ever have.</td></tr>
+		<tr><td><code>DEFAULT_TIMEOUT</code></td><td>10</td><td>Seconds a <code>Call</code> or <code>BroadcastCall</code> waits when you do not pass a timeout.</td></tr>
+		<tr><td><code>ORPHAN_TTL</code></td><td>10</td><td>Seconds a packet is held when nothing is listening for its name yet.</td></tr>
+		<tr><td><code>ORPHAN_MAX</code></td><td>64</td><td>How many such packets are kept per name. The oldest goes first.</td></tr>
+		<tr><td><code>BUFFER_TTL</code></td><td>30</td><td>Seconds the server holds a packet for a client that has not readied the channel.</td></tr>
+		<tr><td><code>BUFFER_MAX</code></td><td>64</td><td>How many packets the server holds per channel, per client.</td></tr>
+		<tr><td><code>OUTBOX_TTL</code></td><td>30</td><td>Seconds the client holds a packet whose ref has not replicated. Readiness packets are exempt.</td></tr>
+		<tr><td><code>OUTBOX_MAX</code></td><td>64</td><td>How many ordinary packets the client holds. Readiness packets are not counted or dropped.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Every limit here is a cap plus an expiry. That pairing is the whole design. A queue
+	with only a cap keeps stale data forever, and a queue with only an expiry can still be
+	flooded in a second.
+</p>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="../guide/ref-pool.html">The Ref Pool</a> for what the pool looks like in ReplicatedStorage.</li>
+	<li><a href="../guide/startup.html">Startup and Buffering</a> for the readiness and buffering rules in plain terms.</li>
+	<li><a href="carrier.html">Carrier</a> for the layer you should normally be using.</li>
+	<li><a href="transformer.html">Transformer</a> for the object that picks the ref.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

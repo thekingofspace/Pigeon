@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Middleware | Pigeon</title>
+<meta name="description" content="Middleware is code that sees the packets a carrier sends and receives, and can rewrite the event name or the arguments.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Middleware</h1>
+
+<p class="lead">
+	Middleware is a function that sees the packets a carrier sends and receives. A packet
+	is one message in flight: an event name plus the arguments that went with it.
+	Middleware can look at both, and it can change both.
+</p>
+
+<h2>The two hooks</h2>
+
+<p>
+	A carrier has two chains. One for packets coming in, one for packets going out. Both
+	methods are shared code, so you can call them on the server, on the client, or on
+	both. A chain belongs to the carrier you called it on and to nothing else.
+</p>
+
+<h3 id="useincoming">UseIncoming <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:UseIncoming(Callback: MiddlewareFunction) -> ()</code></pre>
+</div>
+
+<p>
+	Adds a function to the end of the inbound chain. It runs for each packet this carrier
+	receives, before your <code>On</code> handlers see it. Replies to a <code>Call</code>
+	are the one exception, and they are covered further down.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Callback</code></td><td><code>MiddlewareFunction</code></td><td>The middleware. Its shape is <a href="#the-callback">below</a>, and the type lives in <a href="../api/types.html">Types</a>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:UseIncoming(function(direction, event, args, player)
+	print("in", event, #args)
+end)</code></pre>
+
+<h3 id="useoutgoing">UseOutgoing <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:UseOutgoing(Callback: MiddlewareFunction) -> ()</code></pre>
+</div>
+
+<p>
+	Adds a function to the end of the outbound chain. It runs for each packet this carrier
+	sends, just before the packet is handed to the transport. The value a listener returns
+	to answer a request does not count as a send here.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Callback</code></td><td><code>MiddlewareFunction</code></td><td>The middleware. Its shape is <a href="#the-callback">below</a>, and the type lives in <a href="../api/types.html">Types</a>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:UseOutgoing(function(direction, event, args, player)
+	print("out", event, #args)
+end)</code></pre>
+
+<h2 id="the-callback">The callback</h2>
+
+<p>Every middleware function has the same shape.</p>
+
+<pre><code>(direction: string, event: string, args: {any}, player: Player?) -> (string?, {any}?)</code></pre>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Argument</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>direction</code></td><td>The string <code>"incoming"</code> or <code>"outgoing"</code>. Handy when you use the same function for both chains.</td></tr>
+		<tr><td><code>event</code></td><td>The event name, as you wrote it. No channel prefix, no decoration.</td></tr>
+		<tr><td><code>args</code></td><td>A plain array of the arguments. Index 1 is the first one.</td></tr>
+		<tr><td><code>player</code></td><td>The player on the other end, or <code>nil</code>. See the table below.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>When you get a player</h3>
+
+<p>
+	<code>player</code> is only ever filled in on the server, and only on some paths.
+	Do not assume it is there.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Where</th><th>What <code>player</code> is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Incoming, on the server</td><td>The player who sent the packet.</td></tr>
+		<tr><td>Incoming, on the client</td><td><code>nil</code>. It came from the server.</td></tr>
+		<tr><td>Outgoing, <code>CallTo</code></td><td>The player being asked.</td></tr>
+		<tr><td>Outgoing, <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code>, <code>SendToRoom</code></td><td><code>nil</code>. One packet is built for the whole list, so there is no single recipient to name.</td></tr>
+		<tr><td>Outgoing, on the client</td><td><code>nil</code>. There is only one place to send to.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>What you return</h3>
+
+<p>Two optional values, in this order.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Return</th><th>Effect</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>A string</td><td>Replaces the event name.</td></tr>
+		<tr><td>A table, second</td><td>Replaces the argument list.</td></tr>
+		<tr><td>Nothing</td><td>The packet carries on untouched.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Each is checked on its own. Return only a string and the arguments are left alone.
+	Return <code>nil</code> then a table and the name is left alone. Anything that is
+	not a string in the first slot, or not a table in the second, is ignored.
+</p>
+
+<h2>Where in the trip it runs</h2>
+
+<p>
+	Outgoing middleware runs just before the packet is handed to the transport, after
+	the handshake filter has already narrowed the recipient list.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Sending</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:Broadcast("Sold", id)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">handshake filter</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">outgoing middleware</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">on the wire</span>
+	</div>
+</div>
+
+<p>
+	Incoming middleware runs after the handshake check and before your listeners.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Receiving</p>
+	<div class="flow__row">
+		<span class="flow__box">packet arrives</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">handshake check</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">incoming middleware</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">your On handlers</span>
+	</div>
+</div>
+
+<p>
+	Two things follow from that. A client the handshake turned away never reaches your
+	incoming middleware. And if a broadcast has nobody left to send to after the
+	handshake filter, the outgoing chain does not run at all.
+	See <a href="handshakes.html">Handshakes</a>.
+</p>
+
+<h3>Replies skip both chains</h3>
+
+<p>
+	The value a listener returns to answer a <code>Call</code> or a <code>CallTo</code>
+	does not go through middleware. A reply travels back on its own path, so the outgoing
+	chain on the answering machine never sees it, and neither does the incoming chain on
+	the asking machine. Middleware only ever sees the request half of a round trip.
+	See <a href="requests.html">Requests and Replies</a>.
+</p>
+
+<h2>The chain runs in order</h2>
+
+<p>
+	Middleware runs in the order you added it. Each one is handed what the previous one
+	produced, so a rename in the first is what the second sees.
+</p>
+
+<pre><code>local carrier = Pigeon.new("Demo")
+
+carrier:UseOutgoing(function(direction, event, args)
+	print("first sees", event)   --> Buy
+	return "Purchase"
+end)
+
+carrier:UseOutgoing(function(direction, event, args)
+	print("second sees", event)  --> Purchase
+end)</code></pre>
+
+<p>
+	Whatever comes out of the last one is what actually gets sent, or what your
+	listeners actually get.
+</p>
+
+<p>
+	The chain is read at the moment a packet moves, so it does not matter whether you
+	call <code>UseIncoming</code> before or after <code>On</code>. There is no way to
+	remove a middleware once added, short of destroying the carrier.
+</p>
+
+<h2>Example: log every event</h2>
+
+<p>
+	The simplest useful middleware. It returns nothing, so nothing changes.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:UseIncoming(function(direction, event, args, player)
+	local who = if player then player.Name else "server"
+	print(string.format("[%s] %s from %s, %d args", direction, event, who, #args))
+end)
+
+shop:UseOutgoing(function(direction, event, args, player)
+	print(string.format("[%s] %s, %d args", direction, event, #args))
+end)</code></pre>
+</div>
+
+<p>
+	Because both chains get <code>direction</code>, you can write it once and hand the
+	same function to both.
+</p>
+
+<pre><code>local function log(direction, event, args, player)
+	print(direction, event, #args)
+end
+
+shop:UseIncoming(log)
+shop:UseOutgoing(log)</code></pre>
+
+<h2>Example: add a timestamp argument</h2>
+
+<p>
+	Push a value onto the end of <code>args</code> and hand the table back as the second
+	return. The first return is <code>nil</code>, so the event name is untouched.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local chat = Pigeon.new("Chat")
+
+chat:UseOutgoing(function(direction, event, args, player)
+	table.insert(args, os.time())
+	return nil, args
+end)
+
+chat:Emit("Say", "hello")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local chat = Pigeon.new("Chat")
+
+-- The extra argument lands after the ones the client passed.
+chat:On("Say", function(player, text, sentAt)
+	print(player.Name, text, sentAt)
+end)</code></pre>
+</div>
+
+<p>
+	The <code>args</code> table you get is a copy, so you can edit it in place and
+	return it. You do not have to build a new one.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		You can add arguments, but you cannot make a packet shorter than the caller
+		made it. Pigeon sends whichever is larger: the number of arguments the caller
+		passed, or the length of the table you returned. Removing an entry just turns
+		it into a <code>nil</code> in the middle.
+	</p>
+</div>
+
+<h2>Example: rename an event</h2>
+
+<p>
+	Return a string and the packet travels under that name instead. On the sending side
+	this is straightforward. It changes the name that goes on the wire.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- Old code all over the place still says "Buy". The server only knows "Purchase".
+shop:UseOutgoing(function(direction, event, args, player)
+	if event == "Buy" then
+		return "Purchase"
+	end
+end)
+
+shop:Emit("Buy", "sword")   -- the server sees "Purchase"</code></pre>
+</div>
+
+<p>
+	On the receiving side the rename decides which listeners fire. The packet arrives
+	as <code>"Buy"</code>, middleware turns it into <code>"Purchase"</code>, and the
+	handlers registered for <code>"Purchase"</code> run. Handlers registered for
+	<code>"Buy"</code> do not.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:UseIncoming(function(direction, event, args, player)
+	if event == "Buy" then
+		return "Purchase"
+	end
+end)
+
+shop:On("Purchase", function(player, itemId)
+	giveItem(player, itemId)
+end)</code></pre>
+</div>
+
+<p>
+	Nothing calls <code>On("Buy")</code> and nothing needs to. The old name only has to
+	exist on the wire.
+</p>
+
+<h2>Every packet on the channel runs the chain</h2>
+
+<p>
+	Incoming middleware runs for every packet addressed to the carrier, whether or not
+	anything is listening for the event it names. You do not have to bind a name to see
+	it, so you can rename an event nobody listens for onto one somebody does, log the
+	events you did not expect, or turn a packet away before it reaches anything.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:UseIncoming(function(direction, event, args, player)
+	-- Runs for "Buy", for "Purchase", and for a name a client made up.
+	print(player, event)
+end)
+
+shop:On("Purchase", handlePurchase)</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		A packet whose event has no listener <em>yet</em> is held for one, the same as
+		it always was, so a handler you register a moment late still gets it. It runs
+		the chain once, when it arrives, not again when it is replayed.
+	</p>
+</div>
+
+<h3>Renaming to nothing turns the packet away</h3>
+
+<p>
+	Return a name nothing is listening for and the packet stops there. No listener runs
+	and nothing is held for later. That is how you refuse a packet: send it somewhere
+	that does not exist.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:UseIncoming(function(direction, event, args, player)
+	if isRateLimited(player) then
+		return "DENIED"
+	end
+end)
+
+shop:On("Purchase", handlePurchase)   -- never runs for a limited player</code></pre>
+
+<p>
+	<code>"DENIED"</code> is not special. It is just a name you never call
+	<code>On</code> for, and any other such name does the same thing.
+</p>
+
+<p>
+	A <code>Call</code> refused this way is answered straight away with
+	<code>nil</code>. The caller does not sit out its timeout, because a rename is a
+	decision rather than a listener that has yet to appear. See
+	<a href="requests.html">Requests and Replies</a>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		If you build two carriers on one name and only one of them binds an event, the
+		other's incoming middleware does not see that event: the packet is claimed by
+		the listener before the chain gets a look. Keep the receiving side to a single
+		carrier per name, which is the advice on <a href="carriers.html">Carriers</a>
+		anyway.
+	</p>
+</div>
+
+<h2>An error in middleware does not stop the packet</h2>
+
+<p>
+	Every middleware runs guarded. If yours throws, Pigeon prints a warning naming the
+	direction and the event, discards whatever that one would have returned, and moves
+	on to the next in the chain. The packet still arrives.
+</p>
+
+<pre><code>local carrier = Pigeon.new("Demo")
+
+carrier:UseIncoming(function(direction, event, args, player)
+	error("oops")
+end)
+
+carrier:UseIncoming(function(direction, event, args, player)
+	print("still runs")
+end)
+
+-- Your On handler still fires with the original arguments.</code></pre>
+
+<p>
+	This is deliberate. A logging function with a typo in it should not take your whole
+	channel down. It does mean a broken middleware fails quietly apart from the
+	warning, so read your output window.
+</p>
+
+<h2>Middleware sees Pigeon's own events</h2>
+
+<p>
+	Pigeon runs a few things over the same channel: pings, the handshake, and staged
+	table snapshots and patches. They use event names that start with
+	<code>__pigeon_</code>, and they go through your middleware like anything else.
+</p>
+
+<p>Log a busy channel and you will see names like these:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Event</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>__pigeon_ping</code></td><td>A <code>Ping</code> round trip.</td></tr>
+		<tr><td><code>__pigeon_handshake</code></td><td>A client presenting credentials.</td></tr>
+		<tr><td><code>__pigeon_table_request</code></td><td>A client asking for a staged table.</td></tr>
+		<tr><td><code>__pigeon_table_snapshot</code></td><td>A full copy of a staged table, pushed out by <code>ForceTable</code>.</td></tr>
+		<tr><td><code>__pigeon_table_patch</code></td><td>A batch of staged table writes.</td></tr>
+		<tr><td><code>__pigeon_table_release</code></td><td>A client giving a staged table up.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Never rename or rewrite an event whose name starts with <code>__pigeon_</code>.
+		You will break handshakes, pings or staged table replication on that channel.
+		If your middleware changes things, check the name first.
+	</p>
+</div>
+
+<pre><code>local carrier = Pigeon.new("Demo")
+
+carrier:UseOutgoing(function(direction, event, args, player)
+	if string.sub(event, 1, 9) == "__pigeon_" then
+		return   -- leave Pigeon's own traffic alone
+	end
+	table.insert(args, os.time())
+	return nil, args
+end)</code></pre>
+
+<p>
+	The same prefix is off limits for your own event names. See
+	<a href="sending.html">Sending and Receiving</a>.
+</p>
+
+<h2>Middleware is per carrier</h2>
+
+<p>
+	A chain belongs to one carrier object, not to a channel name. Two carriers built on
+	the same name have separate chains, even though they hear the same packets.
+	<code>Pigeon.new("Shop")</code> with no options hands back the same cached carrier
+	every time, so middleware added anywhere in your code applies everywhere that asks
+	for <code>"Shop"</code>. Passing options builds a fresh carrier with an empty chain.
+	See <a href="carriers.html">Carriers</a>.
+</p>
+
+<h2>Destroy clears both chains</h2>
+
+<p>
+	<code>carrier:Destroy()</code> empties the incoming and outgoing lists along with
+	everything else. Middleware holds your closures, and those closures can hold
+	anything, so they are dropped rather than left sitting on a dead object. See
+	<a href="cleanup.html">Cleanup</a>.
+</p>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="handshakes.html">Handshakes</a> if you want to block a client outright rather than filter its packets.</li>
+	<li><a href="sending.html">Sending and Receiving</a> for the methods middleware sits in front of.</li>
+	<li><a href="../api/carrier.html">Carrier</a> for the full method list.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-base="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pigeon</title>
+<meta name="description" content="Pigeon is a networking library for Roblox. One pool of remotes, named channels, rooms, handshakes, middleware and replicated tables.">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+</head>
+<body class="is-home">
+
+<div class="layout">
+	<div class="home">
+
+		<section class="hero">
+			<svg class="hero__logo" viewBox="0 0 64 64" style="color:var(--brand)" aria-hidden="true">
+				<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M62 20.5L52.5 17C51.5 11 45 8.2 40 11C35.5 13.5 34 18 35.5 22.5C30.5 24.5 25 27 21 30C18 32 15 33.2 12 34.2L1 36L2.5 44.5L14 43C15.5 47.5 20 51 26.5 52C36 53.5 45 48 48.5 39C51 32.5 51.5 27 49.5 23.8C50.5 22.8 51.5 21.8 52.5 21.3ZM51.8 15.8C51.8 17 50.8 18 49.6 18C48.4 18 47.4 17 47.4 15.8C47.4 14.6 48.4 13.6 49.6 13.6C50.8 13.6 51.8 14.6 51.8 15.8ZM36 27C28.5 30.5 22.5 36 20 43C21.3 43.8 22.8 44.4 24.5 44.8C26.8 38.5 31.5 33.5 38.5 30.8Z"/>
+			</svg>
+
+			<h1 class="hero__name">Pigeon</h1>
+			<p class="hero__tagline">Networking for Roblox that stays small as your game grows.</p>
+			<p class="hero__text">
+				Pick a name on the server, pick the same name on the client, and the two are talking.
+				Pigeon handles the remotes, the ordering, the startup race and the cleanup for you.
+			</p>
+
+			<div class="hero__actions">
+				<a class="button button--primary" href="guide/getting-started.html">Get Started</a>
+				<a class="button button--ghost" href="guide/why.html">Why Pigeon</a>
+				<a class="button button--ghost" href="api/pigeon.html">API Reference</a>
+			</div>
+		</section>
+
+		<section class="features">
+			<div class="feature">
+				<div class="feature__icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+				</div>
+				<h3>Names, not instances</h3>
+				<p>You never make a RemoteEvent. You name a channel. Build the same name on both sides and they are connected.</p>
+			</div>
+
+			<div class="feature">
+				<div class="feature__icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+				</div>
+				<h3>A small pool of remotes</h3>
+				<p>Hundreds of channels share at most 32 RemoteEvents. Add a feature and your instance count stays flat.</p>
+			</div>
+
+			<div class="feature">
+				<div class="feature__icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.5-3 8-7 9-4-1-7-4.5-7-9V7z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg>
+				</div>
+				<h3>Channels you can lock</h3>
+				<p>Put a guard on a channel and only players who pass it can send or receive. A staff channel is safe to shout on.</p>
+			</div>
+
+			<div class="feature">
+				<div class="feature__icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16v12H4z"/><path d="M4 10h16M9 10v8"/></svg>
+				</div>
+				<h3>Tables that replicate</h3>
+				<p>Change a table on the server and the clients holding it see the change. No manual sync code and no diffing.</p>
+			</div>
+
+			<div class="feature">
+				<div class="feature__icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+				</div>
+				<h3>No startup race</h3>
+				<p>Anything sent before a client is ready waits in a queue. Register your handlers first, then let the backlog in.</p>
+			</div>
+
+			<div class="feature">
+				<div class="feature__icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+				</div>
+				<h3>Cleanup in one call</h3>
+				<p>Group related channels and drop them all together. Nothing is left connected after you tear a system down.</p>
+			</div>
+		</section>
+
+		<section class="home-section">
+			<h2>The whole idea</h2>
+			<p>Two files. One name. That is the entire setup.</p>
+
+			<div class="split">
+				<div class="code-block">
+					<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId)
+	local ok = giveItem(player, itemId)
+	return ok
+end)
+
+shop:Broadcast("StockChanged", getStock())</code></pre>
+				</div>
+
+				<div class="code-block">
+					<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", function(stock)
+	updateShopUi(stock)
+end)
+
+shop:Init()
+
+print(shop:Call("Buy", "sword"))</code></pre>
+				</div>
+			</div>
+
+			<p style="margin-top:22px">
+				No RemoteEvent was created, named, found or waited for. The name
+				<code>"Shop"</code> is the only thing the two sides agree on.
+			</p>
+		</section>
+
+		<section class="home-section">
+			<h2>Built on a good idea</h2>
+			<p>
+				Pigeon is heavily inspired by
+				<a href="https://github.com/OMouta/roblox-sockets" target="_blank" rel="noopener">roblox-sockets</a>
+				by OMouta, which brought the socket style of events, rooms and middleware to Roblox.
+				Go and look at it. Pigeon takes that shape and adds a shared remote pool, a startup
+				queue, locked channels and replicated tables on top.
+			</p>
+			<p style="text-align:center">
+				<a class="button button--ghost" href="guide/credits.html">Read the credits</a>
+			</p>
+		</section>
+
+	</div>
+
+	<footer class="home-footer">
+		<p>Released under the MIT License.</p>
+	</footer>
+</div>
+
+<script src="assets/nav.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

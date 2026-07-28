@@ -1,0 +1,36 @@
+{
+  "name": "Pigeon",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Pigeon": {
+        "$path": "src/Pigeon"
+      },
+      "PigeonTests": {
+        "$path": "src/tests/shared"
+      }
+    },
+
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/server"
+      },
+      "PigeonTestsServer": {
+        "$path": "src/tests/server"
+      }
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$className":"StarterPlayerScripts",
+        "Client": {
+          "$path": "src/client"
+        },
+        "PigeonTestsClient": {
+          "$path": "src/tests/client"
+        }
+      }
+    }
+  }
+}

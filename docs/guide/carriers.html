@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carriers | Pigeon</title>
+<meta name="description" content="A carrier is a named channel. How to make one, how the cache works, and what the options table does.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Carriers</h1>
+
+<p class="lead">
+	A carrier is a named channel with two ends. You build the same name on the server
+	and on the client and they are talking. This page covers making one, the caching
+	rule, the options table, and the one mistake that catches people out.
+</p>
+
+<h2>What a carrier is</h2>
+
+<p>
+	A carrier is the object you send on and listen on. It holds your listeners, your
+	rooms, your middleware and the handshake guard. Almost everything you do with
+	Pigeon is a method on a carrier.
+</p>
+
+<pre><code>local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")</code></pre>
+
+<h3>The name is the channel</h3>
+
+<p>
+	The name is the only thing both machines have to agree on. Build
+	<code>Pigeon.new("Shop")</code> on the server and <code>Pigeon.new("Shop")</code>
+	on the client and those two are one channel.
+</p>
+
+<p>
+	Every event you send travels as the carrier name, a NUL byte, then the event name.
+	A <code>Broadcast("Sold")</code> on the "Shop" carrier goes out as
+	<code>Shop\0Sold</code>. Only carriers called "Shop" listen for that, so a "Quests"
+	carrier never hears it, even if both carriers happen to share a transformer.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		The name decides who hears a message. The transformer only decides which pooled
+		RemoteEvent it leaves on. Those are two separate things. See
+		<a href="transformers.html">Transformers</a>.
+	</p>
+</div>
+
+<h2>Making a carrier</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.new(name: string, options: {Unreliable: boolean?, Timeout: number?, Transformer: Transformer?}?) -> PigeonCarrier</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>name</code></td><td><code>string</code></td><td>The channel name, shared by both machines.</td></tr>
+		<tr><td><code>options</code></td><td><code>{Unreliable: boolean?, Timeout: number?, Transformer: Transformer?}?</code></td><td>Transport options. Passing any table makes the carrier unique and uncached.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a <code>PigeonCarrier</code>: the shared carrier for that name, or a new one.</p>
+
+<p>
+	The name must be a non-empty string. Anything else errors with
+	<code>ERR_NO_NAME</code>. Options are optional, and what happens when you pass them
+	is the important part.
+</p>
+
+<h2>The caching rule</h2>
+
+<p>There are two behaviours in one function, and the options table is the switch.</p>
+
+<div class="flow">
+	<p class="flow__label">Pigeon.new</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">just a name</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">look in the cache</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">the same carrier every time</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">name and options</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">skip the cache</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">a brand new carrier every time</span>
+	</div>
+</div>
+
+<h3>A bare name is a lookup</h3>
+
+<p>
+	Called with just a name, <code>Pigeon.new</code> builds the carrier once and hands
+	back that same object for every later call. Any script anywhere in the place can
+	ask for "Shop" and get the one everyone else is using, so you never have to pass a
+	reference around or keep a module just to hold it.
+</p>
+
+<pre><code>local a = Pigeon.new("Shop")
+local b = Pigeon.new("Shop")
+
+print(a == b) --> true</code></pre>
+
+<h3>Options always build a fresh one</h3>
+
+<p>
+	Called with an options table, <code>Pigeon.new</code> builds a new carrier and does
+	not cache it. Every call gives you a different object.
+</p>
+
+<pre><code>local a = Pigeon.new("Shop", { Unreliable = true })
+local b = Pigeon.new("Shop", { Unreliable = true })
+
+print(a == b) --> false</code></pre>
+
+<p>
+	The reason is that options describe one particular carrier. If Pigeon handed you a
+	cached carrier instead, your <code>Timeout</code> and your <code>Transformer</code>
+	would be silently thrown away and you would be using someone else's settings
+	without knowing. Building a fresh one is the only honest answer.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		The check is only whether you passed a table at all. Even
+		<code>Pigeon.new("Shop", {})</code> skips the cache and builds a new carrier,
+		because an empty table is still a table. If you want the shared one, pass
+		nothing.
+	</p>
+</div>
+
+<h3>The cache never hands back a dead carrier</h3>
+
+<p>
+	When a cached carrier is dropped it removes itself from the cache. Dropping happens
+	when you call <code>carrier:Destroy()</code>, or when the transformer it rides on is
+	destroyed. The next <code>Pigeon.new("Shop")</code> then builds a live replacement.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+shop:Destroy()
+
+local fresh = Pigeon.new("Shop")
+
+print(fresh == shop) --> false</code></pre>
+
+<p>
+	You never get an inert object back from the cache. See
+	<a href="cleanup.html">Cleanup</a> for what dropping actually tears down.
+</p>
+
+<h2>The options table</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>Unreliable</code></td>
+			<td><code>boolean?</code></td>
+			<td><code>false</code></td>
+			<td>Sends fire and forget messages over the lossy lane.</td>
+		</tr>
+		<tr>
+			<td><code>Timeout</code></td>
+			<td><code>number?</code></td>
+			<td><code>10</code> seconds</td>
+			<td>How long a request waits for an answer before giving up.</td>
+		</tr>
+		<tr>
+			<td><code>Transformer</code></td>
+			<td><code>Transformer?</code></td>
+			<td>one made from the name</td>
+			<td>The transformer this carrier rides on.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h3>Unreliable</h3>
+
+<p>
+	Set this to <code>true</code> and every fire and forget send goes out on an
+	UnreliableRemoteEvent instead: <code>Emit</code>, <code>Broadcast</code>,
+	<code>BroadcastTo</code>, <code>BroadcastExcept</code> and <code>SendToRoom</code>.
+	Packets may arrive out of order or not at all, which is the right trade for something
+	you resend every frame.
+</p>
+
+<pre><code>local positions = Pigeon.new("Positions", { Unreliable = true })</code></pre>
+
+<p>
+	Only fire and forget sends take that lane. Requests and their replies always go the
+	reliable way, whatever this is set to. Unreliable messages are also never queued for
+	a client that has not started up yet, they are simply dropped. See
+	<a href="unreliable.html">Unreliable Sending</a>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Staged table snapshots and patches are broadcasts too, so they take the lossy lane
+		on an unreliable carrier and a client can end up with a stale mirror. Publish
+		staged tables from a reliable carrier. See
+		<a href="staged-tables.html">Staged Tables</a>.
+	</p>
+</div>
+
+<p>
+	The value has to be exactly <code>true</code>. Anything else, including a truthy
+	value like <code>1</code>, leaves the carrier reliable.
+</p>
+
+<h3>Timeout</h3>
+
+<p>
+	How many seconds <code>Call</code> and <code>CallTo</code> wait for the other side
+	to answer. Leave it out and you get 10 seconds. When the time runs out the call
+	returns <code>nil</code> rather than erroring.
+</p>
+
+<pre><code>local slow = Pigeon.new("Leaderboards", { Timeout = 30 })</code></pre>
+
+<p>See <a href="requests.html">Requests and Replies</a>.</p>
+
+<h3>Transformer</h3>
+
+<p>
+	Hand in a transformer and this carrier rides on it instead of making its own. This
+	is how you put several channels on one remote, and how you turn several channels
+	off in one call.
+</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local damage = Pigeon.new("Damage", { Transformer = combat })
+local status = Pigeon.new("Status", { Transformer = combat })
+
+-- Drops both carriers and every listener on them.
+combat:Destroy()</code></pre>
+
+<p>
+	It must be a real transformer. Passing anything else errors with
+	<code>ERR_NO_TRANSFORMER</code>.
+</p>
+
+<p>
+	Ownership follows who made it. A transformer the carrier made from its own name goes
+	away with the carrier. One you passed in is yours, so <code>carrier:Destroy()</code>
+	leaves it alone.
+</p>
+
+<h3>Reading the options later</h3>
+
+<p>
+	<code>Unreliable</code> and <code>Timeout</code> stay on the carrier as plain fields
+	and are read at send time, so you can change your mind afterwards.
+</p>
+
+<pre><code>local chat = Pigeon.new("Chat")
+
+chat.Timeout = 3      -- calls now give up after 3 seconds
+chat.Unreliable = true -- later sends take the lossy lane</code></pre>
+
+<h2>One name, two carriers</h2>
+
+<p>
+	Because options build a fresh carrier every time, you can have several carriers with
+	the same name on one machine. That is on purpose, and it is the sharpest edge in
+	Pigeon.
+</p>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Incoming messages are routed by name alone. Two carriers called "Shop" on the
+		same machine both hear every "Shop" packet, so every listener on both of them
+		fires for every message. If you registered the same handler on each, it runs
+		twice.
+	</p>
+</div>
+
+<pre><code>local a = Pigeon.new("Shop")
+local b = Pigeon.new("Shop", { Unreliable = true })
+
+a:On("Sold", print)
+b:On("Sold", print)
+
+-- One broadcast from the server prints twice.</code></pre>
+
+<p>The rule that keeps you out of trouble:</p>
+
+<ul>
+	<li>Keep the receiving side to a single carrier per name.</li>
+	<li>Use extra carriers on that name for sending only, when you want different
+		transport settings for different sends.</li>
+</ul>
+
+<p>
+	Give each of them its own transformer if you also want their sends spread over
+	different remotes.
+</p>
+
+<h2>What runs where</h2>
+
+<p>
+	A carrier is one object, but most of its methods only work on one side. Calling a
+	server method on the client errors with <code>ERR_NOT_SERVER</code>, and a client
+	method on the server errors with <code>ERR_NOT_CLIENT</code>.
+</p>
+
+<h3>Server only</h3>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Broadcast</code></td><td>Fire and forget to every player.</td></tr>
+		<tr><td><code>BroadcastTo</code></td><td>Fire and forget to a list of players.</td></tr>
+		<tr><td><code>BroadcastExcept</code></td><td>Fire and forget to everyone but the listed players.</td></tr>
+		<tr><td><code>CallTo</code></td><td>Ask one client something and wait for the answer.</td></tr>
+		<tr><td><code>CreateRoom</code>, <code>DestroyRoom</code>, <code>JoinRoom</code>, <code>LeaveRoom</code>, <code>SendToRoom</code></td><td>Group players and send to the group. See <a href="rooms.html">Rooms</a>.</td></tr>
+		<tr><td><code>UseHandshake</code></td><td>Close the channel behind a guard. See <a href="handshakes.html">Handshakes</a>.</td></tr>
+		<tr><td><code>Approved</code></td><td>Narrow a player list to the ones the guard let in.</td></tr>
+		<tr><td><code>CaptureTable</code>, <code>ReleaseTable</code>, <code>ForceTable</code></td><td>Publish staged tables. See <a href="staged-tables.html">Staged Tables</a>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>Approved</code> is the odd one out. It does not error on the client, but a
+	client never has a guard installed, so it just hands your list straight back.
+</p>
+
+<h3>Client only</h3>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Emit</code></td><td>Fire and forget to the server.</td></tr>
+		<tr><td><code>Call</code></td><td>Ask the server something and wait for the answer.</td></tr>
+		<tr><td><code>Handshake</code></td><td>Present credentials to the server's guard.</td></tr>
+		<tr><td><code>Ping</code></td><td>Measure the round trip to the server in seconds.</td></tr>
+		<tr><td><code>RequestTable</code></td><td>Ask for a staged table by id.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>Both sides</h3>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>On</code></td><td>Listen for an event.</td></tr>
+		<tr><td><code>Off</code></td><td>Stop listening.</td></tr>
+		<tr><td><code>UseIncoming</code>, <code>UseOutgoing</code></td><td>Add middleware. See <a href="middleware.html">Middleware</a>.</td></tr>
+		<tr><td><code>Destroy</code></td><td>Drop the carrier.</td></tr>
+		<tr><td><code>Init</code></td><td>Open the channel for traffic from the server.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>Init</code> is really a client thing, but it does nothing at all on the server
+	and returns the carrier. That way shared code can call it without checking which
+	machine it is on. See <a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", updateShopUi)
+shop:Init()  -- returns the carrier, so this can be chained</code></pre>
+</div>
+
+<h2>A dropped carrier goes quiet</h2>
+
+<p>
+	Once a carrier is dropped it stops sending and stops receiving. It does not error.
+	Teardown often races with work already in flight, and throwing there would spread
+	the problem instead of containing it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+shop:Destroy()
+
+shop:Emit("Buy", "sword")  -- does nothing, does not error</code></pre>
+</div>
+
+<p>
+	The side check comes first, though. <code>Emit</code> is client only, so calling it on
+	the server still errors with <code>ERR_NOT_CLIENT</code> whether the carrier is
+	dropped or not.
+</p>
+
+<h2>Next</h2>
+
+<ul>
+	<li><a href="sending.html">Sending and Receiving</a> for the fire and forget methods.</li>
+	<li><a href="requests.html">Requests and Replies</a> for asking a question and waiting.</li>
+	<li><a href="../api/carrier.html">Carrier API</a> for the full method list with signatures.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Examples | Pigeon</title>
+<meta name="description" content="Working Pigeon examples, from the simplest possible channel down to the transport underneath.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Examples</h1>
+
+<p class="lead">
+	Ten working examples, ordered from the simplest thing you can build to the layer
+	underneath everything else. Each one is complete. You can paste it in and it
+	runs.
+</p>
+
+<p>
+	Start at the top. Every example only uses ideas from the ones above it, so
+	reading straight down teaches you the whole library. Stop when you have what you
+	need. Most games never get past number six.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>#</th><th>Example</th><th>What it teaches</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>1</td><td><a href="#1-tell-the-server-something-happened">Tell the server something happened</a></td><td><code>On</code> and <code>Emit</code></td></tr>
+		<tr><td>2</td><td><a href="#2-ask-the-server-a-question">Ask the server a question</a></td><td><code>Call</code> and returning a value</td></tr>
+		<tr><td>3</td><td><a href="#3-a-live-scoreboard">A live scoreboard</a></td><td><code>Broadcast</code> and <code>Init</code></td></tr>
+		<tr><td>4</td><td><a href="#4-party-chat">Party chat</a></td><td>Rooms</td></tr>
+		<tr><td>5</td><td><a href="#5-a-staff-only-channel">A staff only channel</a></td><td>Handshakes</td></tr>
+		<tr><td>6</td><td><a href="#6-player-stats-that-stay-in-sync">Player stats that stay in sync</a></td><td>Staged tables</td></tr>
+		<tr><td>7</td><td><a href="#7-a-combat-system-you-can-switch-off">A combat system you can switch off</a></td><td>Transformers as a group</td></tr>
+		<tr><td>8</td><td><a href="#8-logging-and-rate-limiting">Logging and rate limiting</a></td><td>Middleware</td></tr>
+		<tr><td>9</td><td><a href="#9-streaming-a-position">Streaming a position</a></td><td>Unreliable sending</td></tr>
+		<tr><td>10</td><td><a href="#10-talking-to-the-transport">Talking to the transport</a></td><td><code>Pigeon.Network</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>1. Tell the server something happened</h2>
+
+<p>
+	The smallest useful thing. The client says a button was pressed and the server
+	hears it. Nothing comes back.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local ui = Pigeon.new("Ui")
+
+-- The player who sent it is always the first argument on the server.
+ui:On("ButtonPressed", function(player, buttonName)
+	print(player.Name, "pressed", buttonName)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local ui = Pigeon.new("Ui")
+
+myButton.Activated:Connect(function()
+	ui:Emit("ButtonPressed", "Shop")
+end)</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		There is no <code>Init</code> here. The client only sends, and sending never
+		needs it. <code>Init</code> is only about receiving.
+	</p>
+</div>
+
+<h2>2. Ask the server a question</h2>
+
+<p>
+	<code>Call</code> waits for an answer. Whatever the server listener returns is
+	what the client gets back.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId)
+	local price = PRICES[itemId]
+	if not price then
+		return false, "no such item"
+	end
+	if getCoins(player) &lt; price then
+		return false, "not enough coins"
+	end
+
+	takeCoins(player, price)
+	giveItem(player, itemId)
+	return true
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- This yields until the server answers, or until the call times out.
+local ok, reason = shop:Call("Buy", "sword")
+
+if ok then
+	showToast("Bought!")
+else
+	showToast("Could not buy: " .. reason)
+end</code></pre>
+</div>
+
+<p>
+	The server never has to send a reply itself. Returning from the listener is the
+	reply. If the listener errors, or nothing is listening, the call gives up after
+	the timeout and returns <code>nil</code>.
+</p>
+
+<h2>3. A live scoreboard</h2>
+
+<p>
+	Now the server starts the conversation. This is the first example that needs
+	<code>Init</code>, because the client is receiving.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local scores = Pigeon.new("Scores")
+
+local function onScoreChanged(board)
+	-- Goes to every player in the game.
+	scores:Broadcast("Updated", board)
+end
+
+-- Send the current board to one player when they join.
+Players.PlayerAdded:Connect(function(player)
+	scores:BroadcastTo({ player }, "Updated", getBoard())
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local scores = Pigeon.new("Scores")
+
+scores:On("Updated", function(board)
+	redrawScoreboard(board)
+end)
+
+-- Handlers are in place, so let the server start sending.
+scores:Init()</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Register every <code>On</code> you care about first, then call
+		<code>Init</code> once. Anything the server sent before that is held for you
+		and arrives in order the moment you call it. See
+		<a href="startup.html">Startup and Buffering</a>.
+	</p>
+</div>
+
+<h2>4. Party chat</h2>
+
+<p>
+	A room is a named list of players on one carrier. You send to the list instead
+	of to everyone.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local party = Pigeon.new("Party")
+
+party:On("Create", function(player, partyId)
+	party:CreateRoom(partyId, { player })
+	return true
+end)
+
+party:On("Join", function(player, partyId)
+	party:JoinRoom(partyId, player)
+	party:SendToRoom(partyId, "Joined", player.Name)
+	return true
+end)
+
+party:On("Say", function(player, partyId, message)
+	party:SendToRoom(partyId, "Message", player.Name, message)
+end)
+
+party:On("Leave", function(player, partyId)
+	party:LeaveRoom(partyId, player)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local party = Pigeon.new("Party")
+
+party:On("Message", function(who, message)
+	addChatLine(who .. ": " .. message)
+end)
+
+party:On("Joined", function(who)
+	addChatLine(who .. " joined the party.")
+end)
+
+party:Init()
+
+party:Call("Join", "party-42")
+party:Emit("Say", "party-42", "hello everyone")</code></pre>
+</div>
+
+<p>
+	Rooms are server side only. The client has no idea they exist, it just asks to
+	be put in one. Players are taken out of every room automatically when they leave
+	the game. See <a href="rooms.html">Rooms</a>.
+</p>
+
+<h2>5. A staff only channel</h2>
+
+<p>
+	A guard closes a channel in both directions. Until a player passes it they
+	cannot send on the channel, and they are left out of every broadcast on it. That
+	is what makes a broadcast here safe.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local staff = Pigeon.new("Staff")
+
+-- Installing a guard closes the channel to everyone straight away.
+staff:UseHandshake(function(player)
+	return isStaff(player)
+end)
+
+staff:On("Kick", function(player, targetName)
+	local target = Players:FindFirstChild(targetName)
+	if target then
+		target:Kick("Removed by staff.")
+	end
+end)
+
+-- Only players the guard let in will ever see this.
+staff:Broadcast("Alert", "Server restarting in 5 minutes")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local staff = Pigeon.new("Staff")
+
+staff:On("Alert", function(message)
+	showStaffAlert(message)
+end)
+
+staff:Init()
+
+-- Yields until the server's guard decides.
+if staff:Handshake() then
+	openStaffPanel()
+end</code></pre>
+</div>
+
+<p>
+	A normal player calling <code>Handshake</code> gets <code>false</code> and stays
+	shut out. They can call it as often as they like and it will keep saying no. See
+	<a href="handshakes.html">Handshakes</a>.
+</p>
+
+<h2>6. Player stats that stay in sync</h2>
+
+<p>
+	A staged table is a plain table whose changes replicate. Write to it on the
+	server and the clients holding it see the write. There is no sync code.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local data = Pigeon.new("Data")
+
+Players.PlayerAdded:Connect(function(player)
+	local stats = Pigeon.StagedTable({
+		coins = 0,
+		level = 1,
+		combat = { health = 100, armour = 0 },
+	})
+
+	-- Only this player may ask for their own stats.
+	stats:UseCapture(function(who)
+		return who == player
+	end)
+
+	data:CaptureTable("stats-" .. player.UserId, stats)
+	profiles[player] = stats
+end)
+
+-- Anywhere later. Every write replicates on its own.
+local function reward(player, coins)
+	local view = profiles[player]:GetTable()
+	view.coins = view.coins + coins
+	view.combat.health = 100
+end</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local data = Pigeon.new("Data"):Init()
+
+-- Yields the first time. After that it is cached and free.
+local stats = data:RequestTable("stats-" .. Players.LocalPlayer.UserId)
+local view = stats:GetTable()
+
+print(view.coins)
+print(view.combat.health)</code></pre>
+</div>
+
+<p>
+	Several writes in the same frame are sent as one message, so filling a table
+	field by field costs one send and not one per field.
+</p>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Read through the top of the view each time, like
+		<code>view.combat.health</code>. Do not keep a nested view in a variable such
+		as <code>local combat = view.combat</code>, because it will not follow the
+		server replacing that whole table. See
+		<a href="known-issues.html">Known Issues</a>.
+	</p>
+</div>
+
+<h2>7. A combat system you can switch off</h2>
+
+<p>
+	Related channels can share one transformer. Destroying it drops all of them, and
+	every listener on them, in one call. This is how you turn a whole system off.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local damage = Pigeon.new("Damage", { Transformer = combat })
+local status = Pigeon.new("Status", { Transformer = combat })
+local effects = Pigeon.new("Effects", { Transformer = combat })
+
+damage:On("Hit", function(player, targetId, amount)
+	applyDamage(player, targetId, amount)
+end)
+
+status:On("Request", function(player)
+	return getStatus(player)
+end)
+
+-- The round is over. One call drops all three channels.
+local function endRound()
+	combat:Destroy()
+end</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- The client builds its own transformer with the same id.
+local combat = Pigeon.Transformer("Combat")
+
+local damage = Pigeon.new("Damage", { Transformer = combat }):Init()
+local effects = Pigeon.new("Effects", { Transformer = combat }):Init()
+
+effects:On("Play", playEffect)
+
+local function leaveMatch()
+	combat:Destroy()
+end</code></pre>
+</div>
+
+<p>
+	The three channels stay separate. A message on <code>"Damage"</code> is never
+	heard by <code>"Status"</code>, even though they ride the same RemoteEvent. See
+	<a href="transformers.html">Transformers</a>.
+</p>
+
+<h2>8. Logging and rate limiting</h2>
+
+<p>
+	Middleware sees every packet on a channel and can change it. This logs
+	everything coming in and blocks a player who is sending too fast.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local chat = Pigeon.new("Chat")
+
+local lastSent = {}
+
+chat:UseIncoming(function(direction, event, args, player)
+	print(direction, event, player and player.Name)
+
+	if event == "Say" then
+		local now = os.clock()
+		if lastSent[player] and now - lastSent[player] &lt; 0.5 then
+			-- Rewrite it into an event nothing listens for, which drops it.
+			return "Ignored", args
+		end
+		lastSent[player] = now
+	end
+
+	-- Returning nothing leaves the packet exactly as it was.
+	return nil
+end)
+
+chat:On("Say", function(player, message)
+	chat:Broadcast("Said", player.Name, message)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local chat = Pigeon.new("Chat")
+
+-- Stamp the time onto everything that leaves this machine.
+chat:UseOutgoing(function(direction, event, args)
+	local copy = table.clone(args)
+	table.insert(copy, os.clock())
+	return nil, copy
+end)
+
+chat:On("Said", function(who, message, sentAt)
+	addChatLine(who, message, sentAt)
+end)
+
+chat:Init()
+
+chat:Emit("Say", "hello")</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Middleware only runs for events that already have a listener. Renaming an
+		event nothing listens for does not make it arrive. See
+		<a href="middleware.html">Middleware</a>.
+	</p>
+</div>
+
+<h2>9. Streaming a position</h2>
+
+<p>
+	For things you send constantly and do not mind losing, an unreliable carrier is
+	cheaper. A dropped position does not matter because another one is right behind
+	it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local tracking = Pigeon.new("Tracking", { Unreliable = true })
+
+RunService.Heartbeat:Connect(function()
+	for _, player in Players:GetPlayers() do
+		tracking:BroadcastExcept({ player }, "Moved", player.UserId, getPosition(player))
+	end
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local tracking = Pigeon.new("Tracking", { Unreliable = true })
+
+tracking:On("Moved", function(userId, position)
+	moveGhost(userId, position)
+end)
+
+tracking:Init()</code></pre>
+</div>
+
+<p>
+	Never put anything that must arrive on an unreliable carrier. Coins, inventory
+	and damage all belong on a normal one. Note that <code>Call</code> and every
+	reply always take the reliable lane anyway, whatever the carrier says. See
+	<a href="unreliable.html">Unreliable Sending</a>.
+</p>
+
+<h2>10. Talking to the transport</h2>
+
+<p>
+	This is the bottom. <code>Pigeon.Network</code> is the layer carriers are built
+	on. You almost never want it, but it is public, and it is how you check on the
+	health of the system.
+</p>
+
+<p>
+	Carriers add channel names, middleware, guards and rooms on top of this. If you
+	use the transport directly you get none of that, and you have to pick your own
+	event names carefully so they do not collide.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Network = Pigeon.Network
+
+local transformer = Pigeon.Transformer("RawExample")
+
+-- Server callbacks get the player, the transformer id, then the payload.
+local disconnect = Network.Receive("raw-event", function(player, transformerId, data)
+	print(player.Name, "sent", data)
+end)
+
+Network.Broadcast(Players:GetPlayers(), transformer, "raw-event", { hello = true })
+
+-- Later.
+disconnect()</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local Network = Pigeon.Network
+
+local transformer = Pigeon.Transformer("RawExample")
+
+-- Client callbacks have no player, so the transformer id comes first.
+Network.Receive("raw-event", function(transformerId, data)
+	print("got", data)
+end)
+
+Network.Push(transformer, "raw-event", { hello = true })</code></pre>
+</div>
+
+<h3>Checking for leaks</h3>
+
+<p>
+	<code>Network.Diagnostics</code> counts what the transport is holding. Every
+	figure should settle. A number that only ever grows is a leak.
+</p>
+
+<pre><code>local before = Pigeon.Network.Diagnostics()
+
+startMySystem()
+stopMySystem()
+
+task.wait(1)
+
+local after = Pigeon.Network.Diagnostics()
+print("listeners:", before.listeners, "->", after.listeners)
+print("pending:", after.pending)</code></pre>
+
+<p>
+	If <code>listeners</code> does not come back down after you tear a system down,
+	something is still connected. See <a href="cleanup.html">Cleanup</a> and
+	<a href="../api/network.html">the Network reference</a>.
+</p>
+
+<h2>Where to go next</h2>
+
+<ul>
+	<li>Working through the <a href="carriers.html">Core Concepts</a> pages fills in everything these examples skipped.</li>
+	<li>The <a href="../api/carrier.html">Carrier reference</a> lists every method with its exact signature.</li>
+	<li><a href="known-issues.html">Known Issues</a> is short and worth reading before you ship.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

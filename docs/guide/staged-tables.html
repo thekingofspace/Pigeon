@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Staged Tables | Pigeon</title>
+<meta name="description" content="A staged table is a plain table whose changes replicate. The server writes to it and every client holding it sees the write.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Staged Tables</h1>
+
+<p class="lead">
+	A staged table is a normal looking table whose changes replicate. The server writes
+	to it, and every client holding it sees the write. There is no sync code and nothing
+	to compare.
+</p>
+
+<h2>The one line version</h2>
+
+<p>
+	The server writes. The clients read.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local staged = Pigeon.StagedTable({ coins = 0 })
+local carrier = Pigeon.new("Stats")
+
+carrier:CaptureTable("stats", staged)
+
+staged:GetTable().coins = 50</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local carrier = Pigeon.new("Stats")
+carrier:Init()
+
+local mine = carrier:RequestTable("stats")
+print(mine:GetTable().coins)  -- 50</code></pre>
+</div>
+
+<p>
+	That is the whole idea. The rest of this page is the detail.
+</p>
+
+<h2>Making one</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.StagedTable(initial: {[any]: any}?) -> StageTable</code></pre>
+</div>
+
+<p>
+	<code>Pigeon.StagedTable</code> builds one. Pass a starting table if you have one, or
+	nothing for an empty one. Whatever you pass is deep copied in, so changing your
+	original afterwards does nothing to the staged table.
+</p>
+
+<p>
+	The copy is checked as it happens. If your starting table holds anything that cannot
+	replicate, this call errors right there. See
+	<a href="#what-can-go-in-one">What can go in one</a> further down.
+</p>
+
+<pre><code>local staged = Pigeon.StagedTable({
+	coins = 0,
+	level = 1,
+	unlocked = { "starter_sword" },
+})</code></pre>
+
+<h3>GetTable</h3>
+
+<div class="api">
+	<pre class="api__sig"><code>staged:GetTable() -> {[any]: any}</code></pre>
+</div>
+
+<p>
+	The staged table object is not the table. <code>GetTable</code> hands you the
+	<em>view</em>, and the view is the thing you read and write.
+</p>
+
+<pre><code>local view = staged:GetTable()
+
+view.coins = 100          -- a write, this replicates
+print(view.coins)         -- a read, 100
+print(#view.unlocked)     -- 1</code></pre>
+
+<h3>The view is a proxy</h3>
+
+<p>
+	A proxy is an object that pretends to be a table. Reads go straight through to the
+	real data underneath. Writes go through too, but Pigeon records each one first, and
+	that record is what gets sent to the clients.
+</p>
+
+<p>
+	Reading a nested table gives you another view, not the raw table. So a write deep
+	inside is recorded just as precisely as one at the top.
+</p>
+
+<pre><code>view.stats = { health = 100, armour = 0 }
+view.stats.health = 60    -- recorded as the path stats.health</code></pre>
+
+<p>
+	That second line sends only <code>stats.health</code>. It does not resend the whole
+	<code>stats</code> table.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		The view is a userdata, not a real table. <code>table.insert(view, x)</code> and
+		<code>table.remove</code> both error on it, and neither <code>pairs(view)</code> nor
+		<code>ipairs(view)</code> works. Append with <code>view[#view + 1] = x</code>
+		instead. <code>#view</code> and <code>for k, v in view do</code> both work.
+	</p>
+</div>
+
+<p>
+	One more thing about iterating. <code>for key, value in view do</code> hands you the
+	<em>raw</em> values, not views. A nested table you get that way is the real table
+	underneath, so writing to it changes the data locally and replicates nothing.
+</p>
+
+<pre><code>-- Wrong. This changes the data but no client hears about it.
+for name, entry in view.players do
+	entry.score = 0
+end
+
+-- Right. Index back through the view so the write is recorded.
+for name in view.players do
+	view.players[name].score = 0
+end</code></pre>
+
+<h2>Publishing it</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:CaptureTable(id: string, Table: StageTable) -> ()</code></pre>
+</div>
+
+<p>
+	A staged table on its own goes nowhere. <code>CaptureTable</code> puts it on a
+	<a href="carriers.html">carrier</a> under an id, which does two things: clients may
+	now ask for it by that id, and every write from now on is shipped to whoever holds
+	it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local carrier = Pigeon.new("Stats")
+
+Players.PlayerAdded:Connect(function(player)
+	local staged = Pigeon.StagedTable({ coins = 0 })
+	carrier:CaptureTable("stats:" .. player.UserId, staged)
+end)</code></pre>
+</div>
+
+<p>
+	The id is separate from the channel name. The channel name is what the two machines
+	agree on to find each other. The id picks one table out of the many that channel may
+	be carrying.
+</p>
+
+<p>
+	Calling this on the client errors with <code>ERR_NOT_SERVER</code>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A staged table holds one write hook, and capturing sets it. Capture the same
+		staged table again, on another carrier or under another id, and the new capture
+		replaces the old hook. Only the most recent one sends patches.
+	</p>
+</div>
+
+<h2>Getting it</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:RequestTable(id: string) -> StageTable</code></pre>
+</div>
+
+<p>
+	On the client, <code>RequestTable</code> asks the server for the table under an id
+	and yields until the first snapshot lands. After that the mirror is cached on the
+	carrier, so asking again is free and hands back the same live object.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local Players = game:GetService("Players")
+
+local carrier = Pigeon.new("Stats")
+carrier:Init()
+
+local mine = carrier:RequestTable("stats:" .. Players.LocalPlayer.UserId)
+local view = mine:GetTable()
+
+print(view.coins)
+
+-- Somewhere else, later. No round trip, no yield.
+local same = carrier:RequestTable("stats:" .. Players.LocalPlayer.UserId)
+print(same == mine)  -- true</code></pre>
+</div>
+
+<p>
+	It <strong>errors</strong> with <code>ERR_CAPTURE_DENIED</code> if the server does not
+	hand the table over. The usual causes:
+</p>
+
+<ul>
+	<li>No table is published under that id. The server also warns with <code>ERR_NO_TABLE</code>.</li>
+	<li>A <a href="#guards">capture guard</a> said no.</li>
+	<li>No reply arrived before the timeout, which is 10 seconds unless you changed it.</li>
+</ul>
+
+<p>
+	Wrap it in <code>pcall</code> if a refusal is a normal outcome for you.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ok, mine = pcall(function()
+	return carrier:RequestTable("stats:" .. someOtherUserId)
+end)
+
+if not ok then
+	print("not allowed to hold that one")
+end</code></pre>
+</div>
+
+<p>
+	Calling this on the server errors with <code>ERR_NOT_CLIENT</code>.
+</p>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		You must call <code>carrier:Init()</code> on the client. The first snapshot
+		arrives either way, because it is a reply and replies are never queued. Every
+		update after that is a normal broadcast, so it sits in the server's queue until
+		you call <code>Init</code> and is thrown away after 30 seconds. Without
+		<code>Init</code> you get one snapshot and then silence. See
+		<a href="startup.html">Startup and Buffering</a>.
+	</p>
+</div>
+
+<h2>How it travels</h2>
+
+<div class="flow">
+	<p class="flow__label">Capture, once</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">carrier:RequestTable("stats")</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">__pigeon_table_request</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">capture guards run</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">server sends a full snapshot</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">client builds the mirror and caches it</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">RequestTable returns</span>
+	</div>
+</div>
+
+<div class="flow">
+	<p class="flow__label">Patch, every time you write</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">view.coins = 50</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">path and value queued</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">end of frame, one batch</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">__pigeon_table_patch to the holders</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">applied to the mirror</span>
+	</div>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Those reserved names all start with <code>__pigeon_</code>. Do not use that
+		prefix for your own events.
+	</p>
+</div>
+
+<h2>Pushing it out</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:ForceTable(id: string, Table: StageTable, Targets: ({Player} | Player)?) -> ()</code></pre>
+</div>
+
+<p>
+	<code>ForceTable</code> sends a table to clients who never asked for it. Pass one
+	player, a list of players, or nothing at all for everyone in the game.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>-- Everyone gets the world state whether they asked or not.
+carrier:ForceTable("world", worldTable)
+
+-- Just this player gets their own row.
+local function pushRow(player, staged)
+	carrier:ForceTable("stats:" .. player.UserId, staged, player)
+end</code></pre>
+</div>
+
+<p>
+	If the table is not published under that id yet, <code>ForceTable</code> captures it
+	for you first, so you do not need a separate <code>CaptureTable</code> call.
+</p>
+
+<p>
+	<strong>Capture guards are not consulted.</strong> They exist to vet clients that ask
+	for a table. This is the server deciding, so there is nothing to vet.
+</p>
+
+<p>
+	Recipients get the table cached under that id straight away, so a later
+	<code>RequestTable</code> for the same id on their side returns it with no round trip
+	and no yield.
+</p>
+
+<p>
+	Calling this on the client errors with <code>ERR_NOT_SERVER</code>.
+</p>
+
+<h2>Giving it up</h2>
+
+<p>
+	There are three ways to let go, and they do very different things. One is the client
+	handing the table back, one is the server dropping its own pointer, and one is the
+	server taking the table off a client.
+</p>
+
+<h3>Release <span class="badge badge--client">Client</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>staged:Release() -> ()</code></pre>
+</div>
+
+<p>
+	Called on a mirror you got from <code>RequestTable</code> or <code>ForceTable</code>,
+	this stops the subscription. The carrier drops its cached mirror and tells the server
+	to take you off the list, so no more patches are sent for that table. A release guard
+	can refuse that last part, which is covered under <a href="#guards">Guards</a>.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local other = carrier:RequestTable("stats:" .. friendUserId)
+showFriendPanel(other:GetTable())
+
+-- Panel closed. Stop paying for updates we no longer look at.
+other:Release()</code></pre>
+</div>
+
+<p>
+	The object you hold keeps the data it had, but it stops changing. A later
+	<code>RequestTable</code> for the same id fetches a fresh mirror with a fresh
+	snapshot. Calling <code>Release</code> twice does nothing the second time.
+</p>
+
+<h3>ReleaseTable <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:ReleaseTable(id: string) -> ()</code></pre>
+</div>
+
+<p>
+	This is not the opposite of <code>CaptureTable</code>. It drops the carrier's pointer
+	to the table and nothing else. Read that twice, because it surprises people.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>After <code>ReleaseTable</code></th><th>What happens</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>A new <code>RequestTable</code> for that id</td>
+			<td>Refused. The server warns <code>ERR_NO_TABLE</code> and the client errors.</td>
+		</tr>
+		<tr>
+			<td>Clients that already hold it</td>
+			<td>Keep holding it and keep getting patches.</td>
+		</tr>
+		<tr>
+			<td>You write to the table again</td>
+			<td>The write still goes out to those clients.</td>
+		</tr>
+		<tr>
+			<td>A client calls <code>Release</code></td>
+			<td>The server can no longer find the table, so it is not taken off the list.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	If you want replication to actually stop, drop the carrier with
+	<code>carrier:Destroy()</code>. That clears the write hook and the holder list on
+	every table the carrier was pointing at. The staged tables themselves survive, so any
+	of them can be captured again by another carrier. See <a href="cleanup.html">Cleanup</a>.
+</p>
+
+<p>
+	Calling <code>ReleaseTable</code> on the client errors with
+	<code>ERR_NOT_SERVER</code>.
+</p>
+
+<h3>Revoke <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Revoke(Targets: {Player} | Player) -> number</code></pre>
+</div>
+
+<p>
+	This is the server taking the table back off a client. Pass one player or a list of
+	them. Each one loses their place in the carrier's admission list, and comes off the
+	holder list of every staged table the carrier holds. The full reference is on the
+	<a href="../api/carrier.html#revoke">Carrier</a> page.
+</p>
+
+<p>
+	If it took them off at least one table, they are sent a reserved
+	<code>__pigeon_table_revoke</code> message naming those ids. Their mirrors let go when
+	it lands: the entry leaves the carrier's cache, the release hook is cleared so the
+	client does not tell the server something it already knows, and the mirror is marked
+	released.
+</p>
+
+<p>
+	<strong>Returns</strong> how many of the players you named had actually been admitted.
+	A player who never passed the handshake, and a player you revoked a moment ago, both
+	count for nothing.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local stats = Pigeon.new("Stats")
+
+-- They sold the pet, so they stop seeing its row.
+local removed = stats:Revoke(player)
+print(removed)  -- 1 if they were admitted, 0 if not</code></pre>
+</div>
+
+<p>
+	That player is now shut out in both directions on this carrier. Every
+	<code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code> and
+	<code>SendToRoom</code> skips them, <code>CallTo</code> returns <code>nil</code> without
+	asking, and anything they send is dropped before your handlers see it. No more patches
+	reach their mirror either, because they are off the holder list.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Revoking only blocks sending on a carrier that has a
+		<a href="handshakes.html">handshake</a> installed, because that filter is the only
+		thing that reads the admission list. On a carrier with no guard, <code>Revoke</code>
+		still takes them off every staged table, but broadcasts keep reaching them.
+	</p>
+</div>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Revoking cuts off the future, it cannot undo the past. The data their mirror already
+		holds stays in their memory, and it is still there for them to read. Do not treat
+		<code>Revoke</code> as a way of making something you already sent secret again.
+	</p>
+</div>
+
+<p>
+	Rooms are left alone on purpose. A revoked player stays in every room they were in, they
+	simply hear nothing because the handshake filter drops them from each send. Nor is any
+	of this permanent. The client can call <code>Handshake</code> again and be judged
+	afresh, then ask for the table again and get a new mirror with a new snapshot.
+</p>
+
+<h3>Which one you want</h3>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th></th><th><code>Release</code></th><th><code>ReleaseTable</code></th><th><code>Revoke</code></th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Who calls it</td>
+			<td>The client</td>
+			<td>The server</td>
+			<td>The server</td>
+		</tr>
+		<tr>
+			<td>What it is for</td>
+			<td>Giving up a table you no longer read</td>
+			<td>Dropping the carrier's pointer to a table</td>
+			<td>Taking a table off one client</td>
+		</tr>
+		<tr>
+			<td>Named by</td>
+			<td>The mirror itself</td>
+			<td>One id</td>
+			<td>One or more players, every table on the carrier</td>
+		</tr>
+		<tr>
+			<td>Who stops getting patches</td>
+			<td>Just the caller</td>
+			<td>Nobody, holders carry on</td>
+			<td>Just the players you named</td>
+		</tr>
+		<tr>
+			<td>Can it be refused</td>
+			<td>Yes, by a <a href="#guards">release guard</a></td>
+			<td>No</td>
+			<td>No</td>
+		</tr>
+		<tr>
+			<td>Effect on later <code>RequestTable</code></td>
+			<td>Fetches a fresh mirror</td>
+			<td>Refused, the id is gone</td>
+			<td>Refused while the handshake keeps them out</td>
+		</tr>
+		<tr>
+			<td>Returns</td>
+			<td>Nothing</td>
+			<td>Nothing</td>
+			<td>How many were admitted</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>Guards</h2>
+
+<p>
+	A guard is a function that decides whether a client may do something. Staged tables
+	take two kinds.
+</p>
+
+<div class="api">
+	<pre class="api__sig"><code>staged:UseCapture(Callback: (player: Player, id: string) -> boolean?) -> ()</code></pre>
+</div>
+
+<div class="api">
+	<pre class="api__sig"><code>staged:UseRelease(Callback: (player: Player, id: string) -> boolean?) -> ()</code></pre>
+</div>
+
+<p>
+	<code>UseCapture</code> runs when a client calls <code>RequestTable</code>.
+	<code>UseRelease</code> runs when a client calls <code>Release</code>. Both hand your
+	function the player and the id the table was captured under.
+</p>
+
+<p>The rules are short:</p>
+
+<ul>
+	<li>Return <code>false</code> to block.</li>
+	<li>Return anything else, including nothing at all, to allow.</li>
+	<li>A guard that errors blocks, silently. There is no warning.</li>
+	<li>You may add as many as you like. They run in the order you added them, and the
+		first refusal stops the rest from running at all.</li>
+</ul>
+
+<h3>Only let a player capture their own data</h3>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local carrier = Pigeon.new("Stats")
+
+Players.PlayerAdded:Connect(function(player)
+	local staged = Pigeon.StagedTable({ coins = 0, level = 1 })
+	local id = "stats:" .. player.UserId
+
+	-- The only person allowed to hold this one is its owner.
+	staged:UseCapture(function(who)
+		return who == player
+	end)
+
+	carrier:CaptureTable(id, staged)
+end)</code></pre>
+</div>
+
+<p>
+	Anyone else asking for <code>stats:123</code> gets an error out of
+	<code>RequestTable</code> and never sees a byte of it.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Blocking a release is a strange thing to do. The client has already dropped its
+		local mirror by the time your guard runs, so the server keeps sending patches to
+		a client that ignores them. Use <code>UseRelease</code> for bookkeeping, not to
+		hold someone hostage.
+	</p>
+</div>
+
+<h2>What can go in one</h2>
+
+<p>
+	Only plain Roblox data. A staged table replicates <em>state</em>, so everything in it
+	has to be rebuildable on the far side from the wire alone.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Group</th><th>Allowed</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Basics</td>
+			<td><code>nil</code>, <code>boolean</code>, <code>number</code>, <code>string</code>, <code>buffer</code></td>
+		</tr>
+		<tr>
+			<td>Space and shape</td>
+			<td><code>Axes</code>, <code>CFrame</code>, <code>Faces</code>, <code>NumberRange</code>, <code>Ray</code>, <code>Rect</code>, <code>Region3</code>, <code>Region3int16</code>, <code>UDim</code>, <code>UDim2</code>, <code>Vector2</code>, <code>Vector2int16</code>, <code>Vector3</code>, <code>Vector3int16</code></td>
+		</tr>
+		<tr>
+			<td>Looks</td>
+			<td><code>BrickColor</code>, <code>Color3</code>, <code>ColorSequence</code>, <code>ColorSequenceKeypoint</code>, <code>Font</code>, <code>NumberSequence</code>, <code>NumberSequenceKeypoint</code>, <code>TweenInfo</code></td>
+		</tr>
+		<tr>
+			<td>The rest</td>
+			<td><code>CatalogSearchParams</code>, <code>DateTime</code>, <code>EnumItem</code>, <code>OverlapParams</code>, <code>PathWaypoint</code>, <code>PhysicalProperties</code>, <code>Random</code>, <code>RaycastParams</code></td>
+		</tr>
+		<tr>
+			<td>And</td>
+			<td>Tables made only of the above, nested as deep as you like.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Anything else is rejected with an error the moment you write it. The write does not
+	land, so a bad value never leaves half a change behind.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What you wrote</th><th>Error</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>An Instance, or any other type not listed above</td><td><code>ERR_STAGE_UNSUPPORTED</code></td></tr>
+		<tr><td>A function or a thread</td><td><code>ERR_STAGE_BEHAVIOUR</code></td></tr>
+		<tr><td>A table with a metatable, which includes class instances and staged table objects</td><td><code>ERR_STAGE_METATABLE</code></td></tr>
+		<tr><td>A table that refers back into itself</td><td><code>ERR_STAGE_CYCLE</code></td></tr>
+		<tr><td>A table used as a key</td><td><code>ERR_STAGE_TABLE_KEY</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Every message names the exact path it choked on, counted from <code>root</code>.
+</p>
+
+<pre><code>view.stats = { health = workspace.Part }
+
+-- ERR_STAGE_UNSUPPORTED | Staged tables carry plain Roblox data only;
+-- got Instance at root.stats.health.</code></pre>
+
+<p>
+	Instances are out because a reference means nothing on the other machine. Functions
+	and threads are out because behaviour cannot cross a wire. Metatables are out because
+	the far side would only ever get the plain data, never the class. If you need to
+	point at an Instance, store something you can look it up with, like a name or an
+	attribute.
+</p>
+
+<h3>Keys</h3>
+
+<p>
+	Keys are checked the same way, so an Instance key or a function key is an error too.
+	What you gain is that any value type works as a key, and mixing string and number
+	keys in one table is safe. Pigeon sends tables as two parallel arrays of keys and
+	values rather than as a keyed table, which is what makes that work.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Keys that are userdata, such as <code>CFrame</code> or <code>Color3</code>, arrive
+		with the right contents but as a fresh object. Luau looks those up by identity, so
+		a freshly built <code>Color3.new(1, 0, 0)</code> will not find the entry on the
+		client. Strings, numbers, booleans, <code>Vector3</code> and <code>EnumItem</code>
+		keys are all fine.
+	</p>
+</div>
+
+<h2>Batching</h2>
+
+<p>
+	Writes are not sent one packet each. Everything written in the same frame is gathered
+	up and goes out as one patch message at the end of it.
+</p>
+
+<pre><code>-- One message, not five.
+view.coins = 100
+view.level = 3
+view.stats.health = 60
+view.stats.armour = 12
+view.lastSeen = os.time()</code></pre>
+
+<p>
+	So filling a table field by field costs one send, and you never have to batch by hand
+	or build a change list yourself. The order you wrote in is the order the patches are
+	applied in, so writing the same key twice ends with the second value.
+</p>
+
+<p>
+	If nobody is holding the table, the batch is dropped rather than saved. That is fine.
+	The next client to capture gets a full snapshot of the current contents anyway.
+</p>
+
+<h2>The client copy is a mirror</h2>
+
+<p>
+	The client's view is backed by the same proxy machinery, so it reads and writes like
+	a table. But its write hook is left unset on purpose. A local write updates the local
+	view and goes nowhere near the server.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local view = mine:GetTable()
+
+view.coins = 999999
+print(view.coins)  -- 999999, on this client only
+
+-- The server never hears about it, and the next patch that
+-- touches coins wipes it out.</code></pre>
+</div>
+
+<p>
+	Local writes are still type checked, so writing an Instance into a mirror errors just
+	as it does on the server. Treat a mirror as read only. If a client needs to change
+	something, send a normal message and let the server write.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- The right shape. Ask, do not write.
+carrier:Emit("SpendCoins", 50)</code></pre>
+</div>
+
+<h2>There is no change signal</h2>
+
+<p>
+	Pigeon does not tell you when a patch lands. There is no <code>Changed</code> event
+	on a staged table. It keeps the data current and that is all.
+</p>
+
+<p>
+	So read the value when you need it, or have the server send a normal message
+	alongside the write when something needs to react.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>view.coins = view.coins + 50
+carrier:BroadcastTo({ player }, "CoinsChanged")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>carrier:On("CoinsChanged", function()
+	label.Text = tostring(view.coins)
+end)
+
+-- Nothing inbound arrives until this is called.
+carrier:Init()</code></pre>
+</div>
+
+<h2>A full example: player stats</h2>
+
+<p>
+	One staged table per player, owned by that player, with the whole life cycle wired
+	up.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local stats = Pigeon.new("Stats")
+local tables = {}
+
+local function idFor(player)
+	return "stats:" .. player.UserId
+end
+
+Players.PlayerAdded:Connect(function(player)
+	local staged = Pigeon.StagedTable({
+		coins = 0,
+		level = 1,
+		unlocked = { "starter_sword" },
+		combat = { health = 100, armour = 0 },
+	})
+
+	-- Nobody may hold another player's row.
+	staged:UseCapture(function(who)
+		return who == player
+	end)
+
+	stats:CaptureTable(idFor(player), staged)
+	tables[player] = staged
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	stats:ReleaseTable(idFor(player))
+	tables[player] = nil
+end)
+
+-- Call this from anywhere. The client sees it without another line of code.
+local function award(player, coins)
+	local staged = tables[player]
+	if not staged then
+		return
+	end
+
+	local view = staged:GetTable()
+	view.coins = view.coins + coins
+
+	-- Both writes ride in the same message.
+	if view.coins &gt;= 1000 then
+		view.level = view.level + 1
+	end
+
+	stats:BroadcastTo({ player }, "StatsChanged")
+end
+
+local function unlock(player, itemId)
+	local view = tables[player]:GetTable()
+	view.unlocked[#view.unlocked + 1] = itemId
+	stats:BroadcastTo({ player }, "StatsChanged")
+end</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local stats = Pigeon.new("Stats")
+
+local view
+
+stats:On("StatsChanged", function()
+	if view then
+		redrawHud(view)
+	end
+end)
+
+-- Handlers first, then open the inbound side, then ask for the table.
+stats:Init()
+
+local mine = stats:RequestTable("stats:" .. Players.LocalPlayer.UserId)
+view = mine:GetTable()
+
+print(view.coins, view.level)
+print(view.combat.health)
+
+for index, itemId in view.unlocked do
+	print(index, itemId)
+end
+
+redrawHud(view)</code></pre>
+</div>
+
+<p>
+	Nothing in there copies data by hand. The server writes to a table and the client
+	reads a table.
+</p>
+
+<h2>Things to watch out for</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Situation</th><th>What happens</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>The client never calls <code>Init</code></td>
+			<td>The first snapshot arrives, then nothing. Patches queue and expire after 30 seconds.</td>
+		</tr>
+		<tr>
+			<td>The server replaces a whole nested table</td>
+			<td>A nested view the client already read may keep showing the old contents. Prefer writing leaves. See <a href="known-issues.html">Known Issues</a>.</td>
+		</tr>
+		<tr>
+			<td>The same staged table is captured twice</td>
+			<td>The newest capture replaces the write hook. Only it sends patches.</td>
+		</tr>
+		<tr>
+			<td>Writing <code>nil</code> to a key</td>
+			<td>Deletes the key, and the deletion replicates like any other write.</td>
+		</tr>
+		<tr>
+			<td>The carrier has a <a href="handshakes.html">handshake</a></td>
+			<td>A client that has not passed the guard never reaches the request handler, so <code>RequestTable</code> waits out the timeout and then errors. Patches are broadcasts, so they are filtered out too.</td>
+		</tr>
+		<tr>
+			<td><code>ForceTable</code> to a client that has not passed the handshake</td>
+			<td>They are marked as a holder but the snapshot is filtered out, so they get nothing.</td>
+		</tr>
+		<tr>
+			<td>A player leaves</td>
+			<td>They are taken off the holder list of every table the carrier still points at.</td>
+		</tr>
+		<tr>
+			<td>The carrier is dropped on the client</td>
+			<td>Its mirrors are marked released. The server is not told, so it keeps them on the list until they leave.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="../api/staged-table.html">StagedTable</a> for the full method list.</li>
+	<li><a href="../api/carrier.html">Carrier</a> for <code>CaptureTable</code>, <code>RequestTable</code>, <code>ForceTable</code> and <code>ReleaseTable</code>.</li>
+	<li><a href="startup.html">Startup and Buffering</a> for why <code>Init</code> matters so much here.</li>
+	<li><a href="known-issues.html">Known Issues</a> for the sharp edges.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

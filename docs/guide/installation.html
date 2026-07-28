@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installation | Pigeon</title>
+<meta name="description" content="How to add Pigeon to a Roblox place, with Rojo or by hand.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Installation</h1>
+
+<p class="lead">
+	Pigeon is one folder of Luau files. Put it in <code>ReplicatedStorage</code> and
+	require it. There is nothing to build and nothing else to install.
+</p>
+
+<h2>What you are copying</h2>
+
+<p>
+	The whole library is <code>src/Pigeon</code>. Six files, no dependencies beyond
+	Roblox itself.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>File</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>init.luau</code></td><td>The module you require. Becomes the ModuleScript named <code>Pigeon</code>.</td></tr>
+		<tr><td><code>Carrier.luau</code></td><td>Carriers: the named channels you send and listen on.</td></tr>
+		<tr><td><code>Network.luau</code></td><td>The pooled RemoteEvents and the transport underneath.</td></tr>
+		<tr><td><code>Transformer.luau</code></td><td>Transformers: which pooled remote traffic rides on, and group teardown.</td></tr>
+		<tr><td><code>StagedTable.luau</code></td><td>Staged tables: plain tables whose writes replicate.</td></tr>
+		<tr><td><code>Types.luau</code></td><td>The Luau types Pigeon exports.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Pigeon does not pull in any other library. It only asks Roblox for
+	<code>Players</code>, <code>RunService</code>, <code>ReplicatedStorage</code> and
+	<code>HttpService</code>.
+</p>
+
+<h2>Where the folder goes</h2>
+
+<p>
+	<code>ReplicatedStorage</code>. Both machines require the same module, so it has
+	to be somewhere both of them can see, and <code>ReplicatedStorage</code> is that
+	place.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not put Pigeon in <code>ServerScriptService</code> or
+		<code>ServerStorage</code>. The client cannot see either one, so the client half
+		of every channel would have nothing to require. <code>StarterPlayerScripts</code>
+		has the same problem in reverse.
+	</p>
+</div>
+
+<h2>With Rojo</h2>
+
+<p>
+	Copy <code>src/Pigeon</code> into your project and map it into
+	<code>ReplicatedStorage</code>. This is the smallest project file that does it.
+</p>
+
+<pre><code>{
+  "name": "MyGame",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Pigeon": {
+        "$path": "src/Pigeon"
+      }
+    }
+  }
+}</code></pre>
+
+<p>
+	The key on the left is the Instance name, so <code>"Pigeon"</code> is what you
+	will require. The <code>$path</code> on the right is where the files live on
+	disk. Rojo sees <code>init.luau</code> inside the folder and turns the folder
+	itself into a ModuleScript, with the other five files as its children.
+</p>
+
+<p>Here is the same mapping inside a fuller project, next to your own code.</p>
+
+<pre><code>{
+  "name": "MyGame",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Pigeon": {
+        "$path": "src/Pigeon"
+      },
+      "Shared": {
+        "$path": "src/shared"
+      }
+    },
+
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/server"
+      }
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "Client": {
+          "$path": "src/client"
+        }
+      }
+    }
+  }
+}</code></pre>
+
+<h2>Without Rojo</h2>
+
+<p>
+	You can build the same tree by hand in Studio. The names have to match exactly,
+	because the files require each other by name.
+</p>
+
+<ol>
+	<li>Make a ModuleScript in <code>ReplicatedStorage</code> and name it <code>Pigeon</code>.</li>
+	<li>Paste the contents of <code>init.luau</code> into it.</li>
+	<li>Make five ModuleScripts <strong>inside</strong> it, named <code>Types</code>, <code>Network</code>, <code>Transformer</code>, <code>StagedTable</code> and <code>Carrier</code>.</li>
+	<li>Paste the matching file into each one.</li>
+</ol>
+
+<p>The finished tree looks like this.</p>
+
+<pre><code>ReplicatedStorage
+└── Pigeon            (ModuleScript, from init.luau)
+    ├── Carrier
+    ├── Network
+    ├── StagedTable
+    ├── Transformer
+    └── Types</code></pre>
+
+<h2>String requires</h2>
+
+<p>
+	Four of the five inner files require their neighbours by string, like this:
+</p>
+
+<pre><code>-- inside Carrier.luau
+local types = require("./Types")
+local Network = require("./Network")</code></pre>
+
+<p>
+	<code>"./Types"</code> means "the module called Types next to me". That is a
+	string require, and your place has to allow it. If string requires are off, the
+	first inner require errors and Pigeon will not load.
+</p>
+
+<p>
+	<code>init.luau</code> is the exception. It uses ordinary Instance requires, so
+	the entry point itself does not depend on the setting:
+</p>
+
+<pre><code>-- inside init.luau
+local Types = require(script.Types)
+local Network = require(script.Network)</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		If you cannot turn string requires on, you can swap them yourself. Every
+		<code>require("./Name")</code> means exactly the same thing as
+		<code>require(script.Parent.Name)</code>. <code>Types.luau</code> has no
+		requires at all, so there are only four files to touch, and Pigeon then works
+		without the setting.
+	</p>
+</div>
+
+<h2>Requiring it</h2>
+
+<p>From a server Script, usually in <code>ServerScriptService</code>:</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId)
+	shop:BroadcastTo({ player }, "Stock", itemId, 3)
+end)</code></pre>
+</div>
+
+<p>From a LocalScript, usually in <code>StarterPlayerScripts</code>:</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage:WaitForChild("Pigeon"))
+
+local shop = Pigeon.new("Shop")
+
+shop:On("Stock", print)
+shop:Init()
+
+shop:Emit("Buy", "sword")</code></pre>
+</div>
+
+<p>
+	The server handler gets the sending player first. The client handler does not,
+	because on the client there is only ever one sender.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Use <code>WaitForChild</code> on the client. Your LocalScript can run before
+		the Pigeon folder has replicated, and plain <code>ReplicatedStorage.Pigeon</code>
+		errors when it has not arrived yet. On the server it is already there, so the
+		plain index is fine.
+	</p>
+</div>
+
+<h2>What Pigeon adds at runtime</h2>
+
+<p>
+	The server creates one Folder called <code>PigeonRefs</code> in
+	<code>ReplicatedStorage</code> and puts the pooled remotes inside it. They are
+	named <code>PigeonRef_1</code>, <code>PigeonRef_2</code> and so on, each with a
+	matching <code>PigeonRefU_1</code> unreliable twin. The folder also carries a
+	<code>RefCount</code> attribute so clients know how big the pool is.
+</p>
+
+<pre><code>ReplicatedStorage
+└── PigeonRefs        (Folder, created by the server)
+    ├── PigeonRef_1   (RemoteEvent)
+    └── PigeonRefU_1  (UnreliableRemoteEvent)</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not create, rename or delete anything in <code>PigeonRefs</code> yourself.
+		Pigeon owns that folder. Remove or rename a ref and everything that needed it
+		is held on the client for 30 seconds and then dropped, and the channels riding
+		on it never open.
+	</p>
+</div>
+
+<h2>Checking it works</h2>
+
+<p>
+	Drop these two scripts in, press play, and look at the output. If you see the
+	message on the client, everything is wired up.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local test = Pigeon.new("InstallCheck")
+
+Players.PlayerAdded:Connect(function(player)
+	test:BroadcastTo({ player }, "Hello", player.Name)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage:WaitForChild("Pigeon"))
+
+local test = Pigeon.new("InstallCheck")
+
+test:On("Hello", function(name)
+	print("Pigeon works. Hello,", name)
+end)
+
+test:Init()</code></pre>
+</div>
+
+<p>
+	The server fires on <code>PlayerAdded</code>, which almost certainly happens
+	before your LocalScript has finished loading. It still arrives, because the
+	server holds it until the client calls <code>Init</code>. That is
+	<a href="startup.html">Startup and Buffering</a> doing its job on your first run.
+</p>
+
+<h2>Next</h2>
+
+<ul>
+	<li><a href="getting-started.html">Getting Started</a> builds a real channel step by step.</li>
+	<li><a href="carriers.html">Carriers</a> covers the object you use every day.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

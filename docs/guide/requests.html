@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Requests and Replies | Pigeon</title>
+<meta name="description" content="Call, CallTo and Ping: how to ask the other machine a question and wait for the answer.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Requests and Replies</h1>
+
+<p class="lead">
+	Sometimes you do not want to tell the other machine something. You want to ask it
+	something and wait for the answer. That is <code>Call</code> on the client,
+	<code>CallTo</code> on the server, and <code>Ping</code> for a quick latency check.
+</p>
+
+<h2>A first example</h2>
+
+<p>
+	The reply is whatever your listener returns. There is no reply function to call and
+	no promise object to hold on to.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId)
+	if not canAfford(player, itemId) then
+		return false, "too expensive"
+	end
+	giveItem(player, itemId)
+	return true, itemId
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+local ok, detail = shop:Call("Buy", "sword")
+
+if ok then
+	print("bought", detail)
+else
+	print("could not buy:", detail)
+end</code></pre>
+</div>
+
+<p>
+	The client thread stops on the <code>Call</code> line and starts again when the
+	server's listener returns. Everything after that line waits.
+</p>
+
+<h2>Call <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Call(event: string, ...: any) -> ...any</code></pre>
+</div>
+
+<p>
+	The client asks the server something and waits. The server's listener gets the
+	sending player first, exactly like any other listener, and whatever it returns
+	comes back to the caller. Calling it on the server errors with
+	<code>ERR_NOT_CLIENT</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on the server.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The request payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> the server listener's return values, in order, or a single
+	<code>nil</code> if the call timed out or the carrier is dead.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+local price = shop:Call("PriceOf", "sword")
+print(price)</code></pre>
+</div>
+
+<p>
+	The call yields, so it has to run on a thread that is allowed to yield. Do not put
+	one where Roblox forbids yielding.
+</p>
+
+<h2>CallTo <span class="badge badge--server">Server</span> <span class="badge badge--yields">Yields</span></h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:CallTo(Target: Player, Event: string, ...: any) -> ...any</code></pre>
+</div>
+
+<p>
+	The server asks exactly one client and waits. There is no built in way to ask
+	everyone at once. Calling it on the client errors with
+	<code>ERR_NOT_SERVER</code>. Note the capital letters on the first two parameter
+	names, and that the player comes first.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Target</code></td><td><code>Player</code></td><td>The one client to ask.</td></tr>
+		<tr><td><code>Event</code></td><td><code>string</code></td><td>The event to raise on that client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The request payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> the client listener's return values, in order, or
+	<code>nil</code> if the call timed out, the player left, the carrier is dead, or a
+	handshake guard is installed and that player has not passed it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ui = Pigeon.new("Ui")
+
+-- No player argument on this side. There is only one machine asking.
+ui:On("WhatResolution", function()
+	local size = workspace.CurrentCamera.ViewportSize
+	return size.X, size.Y
+end)
+
+ui:Init()</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ui = Pigeon.new("Ui")
+
+local function logResolution(player: Player)
+	local width, height = ui:CallTo(player, "WhatResolution")
+	print(player.Name, width, height)
+end</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>CallTo</code> is held behind the client's <code>Init</code>. If that client
+		has not opened the channel yet, your request sits in the queue for them and the
+		server thread waits anyway. Unless they open it inside your timeout, the call
+		comes back <code>nil</code>. See
+		<a href="startup.html">Startup and Buffering</a>. Client to server
+		<code>Call</code> has no such wait.
+	</p>
+</div>
+
+<h2>The reply is whatever your listener returns</h2>
+
+<p>
+	Return several values and you get several values back, in the same order.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>shop:On("Stats", function(player)
+	return 12, "gold", true
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local level, currency, unlocked = shop:Call("Stats")</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not return <code>nil</code> in the middle of the list. Returns are packed the
+		same way arguments are, and the list stops at the first <code>nil</code>, so
+		<code>return 1, nil, 3</code> arrives as a single value. Return a stand-in such as
+		<code>false</code>, or one table with named keys. See
+		<a href="known-issues.html">Known Issues</a>.
+	</p>
+</div>
+
+<h3>More than one listener</h3>
+
+<p>
+	You can register several listeners for one event. They all run, one after another,
+	in the order you added them. Only the first reply is used. The others are thrown
+	away.
+</p>
+
+<p>
+	They also share a thread, so a slow listener delays every listener behind it on
+	that event.
+</p>
+
+<h2>What a round trip looks like</h2>
+
+<div class="flow">
+	<p class="flow__label">One Call, start to finish</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:Call("Buy", id)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">outgoing middleware</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">pick the remote</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">server guard check</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">incoming middleware</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">your On("Buy") handler</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">it returns true, id</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">reply on the same remote</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">Call returns true, id</span>
+	</div>
+</div>
+
+<p>
+	The reply travels back on whichever remote the request arrived on, not on the one
+	the answering side would have picked. That is why a round trip still works when the
+	two halves were built on different transformers.
+</p>
+
+<h3>Calls always use the reliable remote</h3>
+
+<p>
+	Even on a carrier made with <code>{ Unreliable = true }</code>, requests and replies
+	take the reliable lane. Only fire and forget sends can be lossy. A reply that could
+	vanish would leave the caller stuck until its timeout, so Pigeon never sends one
+	that way. See <a href="unreliable.html">Unreliable Sending</a>.
+</p>
+
+<h2>Timeouts</h2>
+
+<p>
+	Every request gives up after 10 seconds by default and hands you <code>nil</code>.
+	Set your own with the <code>Timeout</code> option, in seconds.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop", { Timeout = 3 })</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Passing options to <code>Pigeon.new</code> builds a fresh carrier that is not
+		cached, even if the table is empty. Ask for <code>Pigeon.new("Shop")</code>
+		somewhere else in your code and you get a different object with the default
+		timeout. Keep one carrier per channel per machine and pass it around. See
+		<a href="carriers.html">Carriers</a>.
+	</p>
+</div>
+
+<p>
+	To change the timeout on a carrier you already share, write the field instead. It is
+	read fresh on every call.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+shop.Timeout = 3</code></pre>
+
+<p>
+	The timeout is read at the moment of the call, and the same number is used by
+	<code>Call</code>, <code>CallTo</code>, and by everything built on them:
+	<code>Ping</code>, <code>Handshake</code> and <code>RequestTable</code>.
+</p>
+
+<p>
+	When the clock runs out the caller is handed <code>nil</code> and stops waiting. If
+	the answer turns up after that it is thrown away.
+</p>
+
+<h2>Slow handlers hold the caller</h2>
+
+<p>
+	The thread that called <code>Call</code> is parked until your listener returns. If
+	the listener yields, the caller yields with it.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A <code>DataStore</code> read, a <code>WaitForChild</code> or a
+		<code>task.wait(15)</code> inside a listener does not just slow that listener
+		down. It holds the machine on the other side of the wire, and if it runs past the
+		timeout the caller has already given up and moved on with <code>nil</code>.
+	</p>
+</div>
+
+<p>
+	If the work is genuinely slow, do not answer with the result. Answer straight away
+	with an acknowledgement and send the real thing later as a normal message.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local data = Pigeon.new("PlayerData")
+
+data:On("LoadProfile", function(player)
+	task.spawn(function()
+		local profile = loadFromDataStore(player)  -- slow
+		data:BroadcastTo({ player }, "ProfileReady", profile)
+	end)
+	return true  -- answers immediately
+end)</code></pre>
+</div>
+
+<h2>Every way you get nil back</h2>
+
+<p>
+	A request never throws because of the far side. It hands you <code>nil</code>.
+	Sometimes that is instant and sometimes you wait out the whole timeout first.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What happened</th><th>When you find out</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>The carrier was dropped, or its transformer was destroyed.</td>
+			<td>Straight away. A dead carrier goes quiet instead of erroring.</td>
+		</tr>
+		<tr>
+			<td><code>CallTo</code> to a player who has not passed the channel's handshake.</td>
+			<td>Straight away. The server does not even send it.</td>
+		</tr>
+		<tr>
+			<td><code>CallTo</code> and the player leaves while you are waiting.</td>
+			<td>As soon as they leave.</td>
+		</tr>
+		<tr>
+			<td><code>Call</code> from a client that has not passed the handshake.</td>
+			<td>After the timeout. The server drops the packet at the door and nothing ever replies.</td>
+		</tr>
+		<tr>
+			<td>Nothing is listening for that event on the far side.</td>
+			<td>After the timeout, unless a listener shows up in time. See below.</td>
+		</tr>
+		<tr>
+			<td>The listener threw an error.</td>
+			<td>After the timeout. A failed listener sends no reply. The far machine warns about it.</td>
+		</tr>
+		<tr>
+			<td>The listener took longer than the timeout.</td>
+			<td>After the timeout.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Calling one on the wrong machine is the exception. <code>Call</code> and
+	<code>Ping</code> on the server throw <code>ERR_NOT_CLIENT</code>, and
+	<code>CallTo</code> on the client throws <code>ERR_NOT_SERVER</code>. Those are your
+	mistakes, so Pigeon tells you loudly.
+</p>
+
+<h3>A request that beats the listener</h3>
+
+<p>
+	If a request arrives for an event nobody has registered yet, it is not thrown away.
+	It is held for 10 seconds and replayed to the first listener that registers for that
+	event. So a handler that gets set up a moment later still runs and still answers,
+	as long as your timeout has not run out first. With the default 10 second timeout
+	the two clocks are very close, so do not lean on it.
+</p>
+
+<h3>nil is not proof of failure</h3>
+
+<p>
+	A listener that returns nothing also gives you <code>nil</code>. You cannot tell
+	that apart from a timeout. When the difference matters, return an explicit flag.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>-- The first value says whether it worked.
+shop:On("Buy", function(player, id)
+	if not giveItem(player, id) then
+		return false, "sold out"
+	end
+	return true, id
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ok, detail = shop:Call("Buy", "sword")
+
+if ok == nil then
+	print("the server never answered")
+elseif ok then
+	print("bought " .. detail)
+end</code></pre>
+</div>
+
+<h2>Ping <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Ping() -> number</code></pre>
+</div>
+
+<p>
+	Measures a full round trip to the server. It takes no parameters. Calling it on the
+	server errors with <code>ERR_NOT_CLIENT</code>.
+</p>
+
+<p><strong>Returns</strong> the round trip in seconds, as a number.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+local seconds = shop:Ping()
+print(string.format("%.1f ms", seconds * 1000))</code></pre>
+</div>
+
+<p>
+	There is nothing to register on the server. Pigeon answers the ping itself on a
+	reserved event, on every carrier, from the moment the carrier is built.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>Ping</code> reads the clock, makes a call, and reads the clock again. It
+		does not check whether the call worked. A ping that fails comes back as roughly
+		the timeout, so a result near <code>10</code> means the round trip never
+		happened at all. That is what you will see on a guarded carrier before the client
+		has passed the handshake. A ping on a dropped carrier comes back near zero
+		instead, because the call gives up at once.
+	</p>
+</div>
+
+<p>
+	The very first ping on a fresh client can also include the wait for the pooled
+	RemoteEvent to replicate down. Take a second reading if the first one looks wrong.
+</p>
+
+<h2>Requests do not wait for Init</h2>
+
+<p>
+	A client can <code>Emit</code> and <code>Call</code> from its first frame. Replies
+	are never queued either, because the caller is provably sitting there waiting for
+	one. So this works with no <code>Init</code> anywhere:
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+local stock = shop:Call("GetStock")  -- fine, no Init needed</code></pre>
+</div>
+
+<p>
+	<code>Init</code> only opens the inbound direction: broadcasts from the server, and
+	server side <code>CallTo</code> requests. Read
+	<a href="startup.html">Startup and Buffering</a> for that half.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Event names starting with <code>__pigeon_</code> are reserved. Ping, handshakes
+		and staged tables run on them. Do not name your own events with that prefix.
+	</p>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="startup.html">Startup and Buffering</a> for what <code>Init</code> holds back and why.</li>
+	<li><a href="handshakes.html">Handshakes</a> for why a call can be silently refused.</li>
+	<li><a href="../api/carrier.html">Carrier API</a> for the full signatures.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

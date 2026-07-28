@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What is Pigeon? | Pigeon</title>
+<meta name="description" content="Pigeon is a networking library for Roblox. Name a channel on both sides and they are talking.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>What is Pigeon?</h1>
+
+<p class="lead">
+	Pigeon is a networking library for Roblox. You give a channel a name, you build
+	that same name on the server and on the client, and the two are talking. Pigeon
+	takes care of the RemoteEvents underneath.
+</p>
+
+<h2>The problem it solves</h2>
+
+<p>
+	The normal way to network in Roblox is one RemoteEvent per feature. A shop event,
+	a combat event, a chat event, a quest event. Each one is an Instance you have to
+	create, name, parent, find and wait for.
+</p>
+
+<p>That works fine for ten features. It stops being fine later:</p>
+
+<ul>
+	<li>Every feature adds another Instance to <code>ReplicatedStorage</code>.</li>
+	<li>Every client has to <code>WaitForChild</code> each one before it can be used.</li>
+	<li>A message sent before the client is listening is gone for good.</li>
+	<li>Turning a system off means remembering every connection it made.</li>
+	<li>Nothing stops a player firing an event they should not have access to.</li>
+</ul>
+
+<p>
+	Pigeon fixes all five at once. You stop thinking about Instances and start
+	thinking about named channels.
+</p>
+
+<h2>The three things you use</h2>
+
+<p>
+	Pigeon has three objects. Most games only ever touch the first one.
+</p>
+
+<h3>Carrier</h3>
+
+<p>
+	A carrier is a named channel. It is the thing you send on and listen on. You make
+	one with <code>Pigeon.new("Shop")</code>. Everything you do day to day is a method
+	on a carrier: <code>On</code>, <code>Emit</code>, <code>Broadcast</code>,
+	<code>Call</code>, rooms, guards and middleware.
+</p>
+
+<p>Read more in <a href="carriers.html">Carriers</a>.</p>
+
+<h3>Transformer</h3>
+
+<p>
+	A transformer decides which RemoteEvent a carrier's traffic rides on. Every
+	carrier makes one from its own name, so you never have to think about it. You only
+	reach for one directly when you want a group of channels to share a remote, or
+	when you want to shut a group of channels down in one call.
+</p>
+
+<p>Read more in <a href="transformers.html">Transformers</a>.</p>
+
+<h3>Staged table</h3>
+
+<p>
+	A staged table is a normal table whose changes replicate. Write to it on the
+	server and every client holding it sees the write. There is no sync code to write
+	and nothing to compare.
+</p>
+
+<p>Read more in <a href="staged-tables.html">Staged Tables</a>.</p>
+
+<h2>How a message travels</h2>
+
+<p>
+	This is the whole path a fire and forget message takes. You only write the first
+	line and the last line.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Server to client</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:Broadcast("Sold", id)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">guard check</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">middleware</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">pick the remote</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">send now, or queue it</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">middleware</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">your On("Sold") handler</span>
+	</div>
+</div>
+
+<p>Each step is a feature you would otherwise have to build:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Step</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Guard check</td>
+			<td>Drops players who have not passed the channel's handshake. See <a href="handshakes.html">Handshakes</a>.</td>
+		</tr>
+		<tr>
+			<td>Middleware</td>
+			<td>Lets you log, rewrite or block the message. See <a href="middleware.html">Middleware</a>.</td>
+		</tr>
+		<tr>
+			<td>Pick the remote</td>
+			<td>Hashes the channel onto one of the pooled RemoteEvents. See <a href="ref-pool.html">The Ref Pool</a>.</td>
+		</tr>
+		<tr>
+			<td>Send now, or queue</td>
+			<td>Holds the message if the client has not called <code>Init</code> yet. See <a href="startup.html">Startup and Buffering</a>.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>A complete example</h2>
+
+<p>
+	Here is a working shop channel. Nothing has been left out.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+-- The client can ask to buy something. Whatever you return goes back to them.
+shop:On("Buy", function(player, itemId)
+	if not canAfford(player, itemId) then
+		return false, "too expensive"
+	end
+	giveItem(player, itemId)
+	return true
+end)
+
+-- Tell everyone the stock changed.
+shop:Broadcast("StockChanged", getStock())</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", function(stock)
+	updateShopUi(stock)
+end)
+
+-- Handlers are set up, so let the server start sending.
+shop:Init()
+
+local ok, reason = shop:Call("Buy", "sword")
+if not ok then
+	print("could not buy:", reason)
+end</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Server handlers get the player as the first argument. Client handlers do not,
+		because there is only one sender.
+	</p>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="why.html">Why Pigeon</a> if you want the case for using it.</li>
+	<li><a href="installation.html">Installation</a> if you want to add it to a game.</li>
+	<li><a href="getting-started.html">Getting Started</a> if you want to build something now.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

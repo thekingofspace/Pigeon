@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rooms | Pigeon</title>
+<meta name="description" content="Rooms are named groups of players on one carrier, made and used entirely on the server.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Rooms</h1>
+
+<p class="lead">
+	A room is a named list of players that lives on one carrier. You put players in it
+	on the server, then send to the whole list in one call. Parties, teams, one lobby
+	per match: anything where the same message goes to some players and not others.
+</p>
+
+<h2>What a room actually is</h2>
+
+<p>
+	It is a list of <code>Player</code> objects with a name, held on the carrier. That
+	is all. There is no Instance, nothing replicates, and the client has no idea rooms
+	exist.
+</p>
+
+<p>
+	Every room method is server only. Call one on the client and it errors with
+	<code>ERR_NOT_SERVER</code>. A client joins a party by asking the server to put it
+	in one, using <a href="sending.html">Emit or Call</a>, and the server decides.
+</p>
+
+<h2>Rooms belong to a carrier</h2>
+
+<p>
+	The room name is only unique inside one carrier. A carrier called "Party" and a
+	carrier called "Chat" can both have a room called "lobby" and they are two
+	unrelated lists.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local party = Pigeon.new("Party")
+local chat = Pigeon.new("Chat")
+
+party:JoinRoom("lobby", player)
+
+-- Nothing was added to this one. It warns that "lobby" does not exist.
+chat:SendToRoom("lobby", "Message", "hello")</code></pre>
+</div>
+
+<p>
+	<code>Pigeon.new("Party")</code> hands back the same carrier every time, so any
+	script on the server can ask for "Party" and see the same rooms. That stops being
+	true the moment you pass options, because
+	<a href="carriers.html">a carrier built with options is always a fresh one</a>
+	with its own empty room list.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>Pigeon.new("Party", {})</code> gives you a second carrier on the same
+		name. Its rooms are separate from the cached one's, so a room you created
+		through one is not there in the other.
+	</p>
+</div>
+
+<h2>The methods</h2>
+
+<h3>CreateRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:CreateRoom(RoomID: string, Members: {Player}) -> ()</code></pre>
+</div>
+
+<p>
+	Makes a room and fills it with the players you pass. If a room already exists under
+	that name it is thrown away and replaced, so the old members are no longer in it.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name, unique inside this carrier.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player}</code></td><td>The players to seed the room with. Pass an empty table for none.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>party:CreateRoom("party_1", { leader })
+party:CreateRoom("party_1", { leader, friend })  -- replaces the first list
+
+-- An empty room is fine. It just has nobody in it yet.
+party:CreateRoom("party_2", {})</code></pre>
+</div>
+
+<p>
+	<code>Members</code> has to be a table here, even for one player. Only
+	<code>JoinRoom</code> and <code>LeaveRoom</code> take a single player as well as a
+	list.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>CreateRoom</code> does not check for duplicates. A player listed twice is
+		in the room twice, and every <code>SendToRoom</code> reaches them twice.
+		<code>JoinRoom</code> does check, so prefer it if you are not sure.
+	</p>
+</div>
+
+<h3>JoinRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:JoinRoom(RoomID: string, Members: {Player} | Player) -> ()</code></pre>
+</div>
+
+<p>
+	Adds one player or a list of them to a room. If the room does not exist yet it is
+	created. A player already in the room is not added again.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name. Created if it does not exist.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player} | Player</code></td><td>One player or a list of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>party:JoinRoom("party_1", player)             -- one player
+party:JoinRoom("party_1", { a, b, c })        -- or several
+party:JoinRoom("party_1", player)             -- no effect, already in</code></pre>
+</div>
+
+<p>
+	Because it creates the room for you, most code never needs
+	<code>CreateRoom</code>. Reach for <code>CreateRoom</code> when you want to wipe an
+	existing list, or when you want the room to exist before anyone is in it.
+</p>
+
+<h3>LeaveRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:LeaveRoom(RoomID: string, Members: {Player} | Player) -> ()</code></pre>
+</div>
+
+<p>
+	Removes one player or a list of them. If the room does not exist, or the player was
+	never in it, nothing happens and nothing is logged.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name to take them out of.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player} | Player</code></td><td>One player or a list of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>party:LeaveRoom("party_1", player)
+party:LeaveRoom("nope", player)  -- quiet, does nothing</code></pre>
+</div>
+
+<p>
+	Taking the last player out does not delete the room. It stays as an empty list until
+	you call <code>DestroyRoom</code>.
+</p>
+
+<h3>DestroyRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:DestroyRoom(RoomID: string) -> ()</code></pre>
+</div>
+
+<p>
+	Drops the room. Nothing is sent to the members and nothing else changes for them,
+	they simply cannot be reached through that name any more. Destroying a room that
+	does not exist is a no-op.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name to drop.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>party:SendToRoom("party_1", "Disbanded")
+party:DestroyRoom("party_1")</code></pre>
+</div>
+
+<p>
+	Send first, then destroy. Once the room is gone <code>SendToRoom</code> has nobody
+	to send to.
+</p>
+
+<h3>SendToRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:SendToRoom(Room: string, event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Fire and forget to every member. It is exactly a
+	<a href="sending.html">BroadcastTo</a> whose recipient list is the room, so the same
+	rules apply in the same order: the handshake filter runs, then outgoing middleware,
+	then anything for a client that has not called <code>Init</code> yet is queued.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Room</code></td><td><code>string</code></td><td>The room name to send to.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each member.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload, passed on to each member's handler.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing. There is no report of who received it.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local party = Pigeon.new("Party")
+
+party:SendToRoom("party_1", "Message", player.Name, "ready?")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local party = Pigeon.new("Party")
+
+party:On("Message", function(who, text)
+	print(who .. ": " .. text)
+end)
+
+party:Init()</code></pre>
+</div>
+
+<p>
+	If the room does not exist, Pigeon warns and sends nothing:
+</p>
+
+<pre><code>ERR_NO_ROOM | Room 'party_1' does not exist.</code></pre>
+
+<p>
+	An empty room is not the same thing. It exists, so there is no warning, and the send
+	quietly does nothing.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		There is no room version of <code>Call</code>. If you need answers back, loop the
+		members yourself and use <code>CallTo</code> on each one. See
+		<a href="requests.html">Requests and Replies</a>.
+	</p>
+</div>
+
+<h2>Players who leave the game</h2>
+
+<p>
+	You do not have to clean up after them. When a player leaves, Pigeon takes them out
+	of every room on that carrier for you.
+</p>
+
+<p>
+	Anything you keep alongside the room is still yours to clear. If you hold your own
+	table of party leaders keyed by player, clear it on <code>PlayerRemoving</code>
+	yourself.
+</p>
+
+<h2>A party system, start to finish</h2>
+
+<p>
+	Pigeon has no way to ask which rooms exist or who is in one. Keep whatever you need
+	to check in a table of your own, and use the room only for sending.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local party = Pigeon.new("Party")
+
+-- Pigeon does not expose room membership, so track what you need to check.
+local leaderOf = {}   -- RoomID -> Player
+
+party:On("Create", function(player)
+	local id = "party_" .. player.UserId
+	party:CreateRoom(id, { player })
+	leaderOf[id] = player
+	return id
+end)
+
+party:On("Join", function(player, id)
+	if not leaderOf[id] then
+		return false, "no such party"
+	end
+	party:JoinRoom(id, player)
+	party:SendToRoom(id, "Joined", player.Name)
+	return true
+end)
+
+party:On("Say", function(player, id, text)
+	if not leaderOf[id] then
+		return
+	end
+	party:SendToRoom(id, "Message", player.Name, text)
+end)
+
+party:On("Leave", function(player, id)
+	party:LeaveRoom(id, player)
+	-- The player is already out, so this one does not reach them.
+	party:SendToRoom(id, "Left", player.Name)
+
+	if leaderOf[id] == player then
+		party:SendToRoom(id, "Disbanded")
+		party:DestroyRoom(id)
+		leaderOf[id] = nil
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	-- Pigeon pulls them out of the rooms. This table is yours.
+	for id, leader in leaderOf do
+		if leader == player then
+			party:SendToRoom(id, "Disbanded")
+			party:DestroyRoom(id)
+			leaderOf[id] = nil
+		end
+	end
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local party = Pigeon.new("Party")
+
+party:On("Joined", function(name) print(name .. " joined") end)
+party:On("Left", function(name) print(name .. " left") end)
+party:On("Message", function(name, text) print(name .. ": " .. text) end)
+party:On("Disbanded", function() print("party over") end)
+
+-- Handlers are in place, so let the queued messages through.
+party:Init()
+
+local id = party:Call("Create")
+party:Emit("Say", id, "anyone want to run this?")</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A room is not a permission check. The client picked that <code>id</code>, so
+		anything it sends alongside one has to be validated on the server, exactly like
+		any other message.
+	</p>
+</div>
+
+<h2>Rooms and handshakes</h2>
+
+<p>
+	<code>SendToRoom</code> goes through the same filter as every other broadcast. If
+	the carrier has a <a href="handshakes.html">handshake</a> installed, a member who
+	has not passed it is dropped from the list and hears nothing, even though they are
+	still in the room. Being in a room does not get you past a guard.
+</p>
+
+<div class="flow">
+	<p class="flow__label">SendToRoom</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">party:SendToRoom("party_1", "Message", text)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">look the room up</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">drop anyone the guard has not approved</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">outgoing middleware</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">send now, or queue per client</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">each member's On handler</span>
+	</div>
+</div>
+
+<h2>What rooms do not do</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>You might expect</th><th>What is true</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>A way to list rooms or read members</td>
+			<td>There is none. Keep your own table if you need to check.</td>
+		</tr>
+		<tr>
+			<td>Empty rooms clean themselves up</td>
+			<td>They do not. Only <code>DestroyRoom</code> removes a room.</td>
+		</tr>
+		<tr>
+			<td>The client can join a room</td>
+			<td>It cannot. Every room method is server only.</td>
+		</tr>
+		<tr>
+			<td>Rooms are shared between carriers</td>
+			<td>They are not. Each carrier holds its own.</td>
+		</tr>
+		<tr>
+			<td>A room survives the carrier</td>
+			<td>It does not. <a href="cleanup.html">Destroying the carrier</a> clears every room on it.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="sending.html">Sending and Receiving</a> for the broadcast methods rooms are built on.</li>
+	<li><a href="handshakes.html">Handshakes</a> for the filter every room send passes through.</li>
+	<li><a href="../api/carrier.html">Carrier</a> for the full method list.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

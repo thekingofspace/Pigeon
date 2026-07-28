@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sending and Receiving | Pigeon</title>
+<meta name="description" content="The fire and forget half of Pigeon: On, Off, Emit, Broadcast, BroadcastTo and BroadcastExcept.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Sending and Receiving</h1>
+
+<p class="lead">
+	This is the fire and forget half of Pigeon. You send a message and carry on. Nothing
+	waits and nothing comes back. If you want an answer, that is
+	<a href="requests.html">Requests and Replies</a>.
+</p>
+
+<h2>The shape of it</h2>
+
+<p>
+	One method listens on both sides. One method sends from the client. Three send from
+	the server, and they differ only in who ends up on the recipient list. Rooms add a
+	fourth server send, <code>SendToRoom</code>, which is covered in
+	<a href="rooms.html">Rooms</a>.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Who calls what</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">client Emit</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">server On</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">server Broadcast</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">client On</span>
+	</div>
+</div>
+
+<h2>Listening</h2>
+
+<h3>On <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:On(event: string, Callback: (...any) -> ...any) -> ()</code></pre>
+</div>
+
+<p>
+	Registers a handler for an event. Works on the server and on the client. The first
+	<code>On</code> for an event is what wires the channel up underneath, so nothing is
+	listening until you call it.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to listen for.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>(...any) -> ...any</code></td><td>The handler. On the server it receives the sending player first. What it returns answers a <code>Call</code> or <code>CallTo</code>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing. Keep the function in a local if you want to remove it later with <code>Off</code>.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId, quantity)
+	print(player.Name, "wants", quantity, "of", itemId)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", function(stock)
+	updateShopUi(stock)
+end)
+
+shop:Init()</code></pre>
+</div>
+
+<h4>The server gets the player first</h4>
+
+<p>
+	On the server, Pigeon puts the sending player in front of your arguments. On the
+	client it does not, because there is only one sender and it is always the server.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Sent as</th><th>Server handler receives</th><th>Client handler receives</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>("Buy", "sword", 2)</code></td>
+			<td><code>(player, "sword", 2)</code></td>
+			<td><code>("sword", 2)</code></td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h4>Many handlers for one event</h4>
+
+<p>
+	<code>On</code> adds a handler, it does not replace the last one. Call it five times
+	for the same event and all five run, in the order you added them. Adding the same
+	function twice runs it twice, there is no check for that.
+</p>
+
+<pre><code>shop:On("Sold", playSound)
+shop:On("Sold", updateUi)
+shop:On("Sold", logIt)
+
+-- One message, three handlers, all of them run.</code></pre>
+
+<p>
+	Each handler runs on its own. If one errors, Pigeon warns with
+	<code>ERR_CALLBACK_ERROR</code> and the rest still run. A broken handler cannot take
+	the others down with it.
+</p>
+
+<h4>Returning a value</h4>
+
+<p>
+	Whatever a handler returns is the answer to a <code>Call</code> or
+	<code>CallTo</code>. For a plain fire and forget message the return value is simply
+	ignored, so you can leave it out. See <a href="requests.html">Requests and Replies</a>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Every handler replies, but only the first reply is kept. If you put two handlers
+		on an event that clients <code>Call</code>, the one you registered first decides
+		the answer, even when it returns nothing at all. Keep one handler on any event you
+		expect a reply from.
+	</p>
+</div>
+
+<h4>Messages that arrive before you listen</h4>
+
+<p>
+	A packet that turns up when nothing is listening for it is held rather than thrown
+	away, and replayed to the first handler that registers. Pigeon keeps up to 64 of
+	them per event for 10 seconds. That is a safety net for the small gap during
+	startup, not a mailbox. For the real answer see
+	<a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<h3>Off <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Off(event: string, Callback: (() -> ())?) -> ()</code></pre>
+</div>
+
+<p>
+	Removes handlers. With a callback it removes that one handler. With no callback it
+	removes every handler for the event.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to unbind.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>(() -> ())?</code></td><td>The one handler to drop. Leave it out to drop them all.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>local function onSold(itemId)
+	print("sold", itemId)
+end
+
+shop:On("Sold", onSold)
+
+shop:Off("Sold", onSold)  -- drops just this handler
+shop:Off("Sold")          -- drops every handler for "Sold"</code></pre>
+
+<p>
+	To remove one handler you need the same function value you passed in, so keep it in
+	a local. An inline <code>function() end</code> written straight into
+	<code>On</code> can only be removed by dropping the whole event.
+</p>
+
+<p>
+	Once the last handler for an event is gone, Pigeon unhooks the channel underneath.
+	Calling <code>Off</code> for an event nobody is listening to does nothing.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Turning a listener off and back on again quickly can replay what you missed.
+		Messages that arrive while nothing is listening are held for 10 seconds, so a
+		later <code>On</code> for that event receives them. A dropped carrier cannot bind
+		again, so nothing is replayed to it.
+	</p>
+</div>
+
+<h2>Sending from the client</h2>
+
+<h3>Emit <span class="badge badge--client">Client</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Emit(event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Sends to the server and returns straight away. This is the only fire and forget
+	method on the client. Calling it on the server errors with
+	<code>ERR_NOT_CLIENT</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on the server.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing, and never yields.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:Emit("Buy", "sword", 2)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId, quantity)
+	grantItem(player, itemId, quantity)
+end)</code></pre>
+</div>
+
+<p>
+	<code>Emit</code> never needs <code>Init</code>. A client can send from its first
+	frame. It is only the inbound direction that waits.
+</p>
+
+<h2>Sending from the server</h2>
+
+<p>
+	All three of these end up in the same place. <code>Broadcast</code> and
+	<code>BroadcastExcept</code> build a player list and hand it to
+	<code>BroadcastTo</code>. Each errors with <code>ERR_NOT_SERVER</code> on the client.
+</p>
+
+<h3>Broadcast <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Broadcast(event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>Sends to every player in the server.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:Broadcast("StockChanged", getStock())</code></pre>
+</div>
+
+<p>
+	The player list is read when you call it, so someone who joins a moment later does
+	not get this message.
+</p>
+
+<h3>BroadcastTo <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:BroadcastTo(Targets: {Player}, event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Sends to the players you list. Note the order of the arguments: the list comes
+	first, then the event name.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Targets</code></td><td><code>{Player}</code></td><td>The recipients.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local party = Pigeon.new("Party")
+
+party:BroadcastTo({ alice, bob }, "Invite", "dungeon-3")
+
+-- One player still goes in a table.
+party:BroadcastTo({ alice }, "Invite", "dungeon-3")</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>BroadcastTo</code> wants a table of players. Passing a bare
+		<code>Player</code> errors. <code>BroadcastExcept</code>, <code>JoinRoom</code>
+		and <code>LeaveRoom</code> normalise a single player into a list first, so it is
+		easy to assume this one does too.
+	</p>
+</div>
+
+<h3>BroadcastExcept <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:BroadcastExcept(Skip: {Player}, event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Sends to everyone in the server apart from the players you name. This is what you
+	want when a player's own action should be shown to everyone else.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Skip</code></td><td><code>{Player}</code></td><td>The players to leave out. A bare <code>Player</code> works too: it goes through the same normaliser as <code>JoinRoom</code>, even though the type says a list.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each remaining client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local chat = Pigeon.new("Chat")
+
+chat:On("Say", function(player, text)
+	-- Everyone else sees it. The sender already drew it locally.
+	chat:BroadcastExcept(player, "Said", player.Name, text)
+end)</code></pre>
+</div>
+
+<p>A list works too, and so does an empty list, which then behaves like a plain <code>Broadcast</code>.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>chat:BroadcastExcept({ alice, bob }, "Said", "system", "server restarting")</code></pre>
+</div>
+
+<h2>Arguments</h2>
+
+<p>
+	Everything after the event name is your payload. Pigeon packs it together with the
+	number of values you passed, and unpacks that same count on the other side, so your
+	handler is called with the same arguments in the same order.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:Broadcast("Sold", "sword", 2, { rarity = "rare" })</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Sold", function(itemId, quantity, meta)
+	print(itemId, quantity, meta.rarity)
+end)
+
+shop:Init()</code></pre>
+</div>
+
+<p>
+	The values themselves have to be things a RemoteEvent can carry, so no functions and
+	no threads. Middleware sits in this path on both machines and can rewrite the event
+	name and the arguments before anything else sees them. See
+	<a href="middleware.html">Middleware</a>.
+</p>
+
+<h2>Reserved event names</h2>
+
+<p>
+	Pigeon runs its own protocol over the same channel you do. Those events all start
+	with <code>__pigeon_</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Name</th><th>Used for</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>__pigeon_ping</code></td><td><code>Ping</code></td></tr>
+		<tr><td><code>__pigeon_handshake</code></td><td><a href="handshakes.html">Handshakes</a></td></tr>
+		<tr><td><code>__pigeon_table_request</code></td><td rowspan="4"><a href="staged-tables.html">Staged Tables</a></td></tr>
+		<tr><td><code>__pigeon_table_snapshot</code></td></tr>
+		<tr><td><code>__pigeon_table_patch</code></td></tr>
+		<tr><td><code>__pigeon_table_release</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Do not name your own events with the <code>__pigeon_</code> prefix, and do not
+		call <code>Off</code> on one. Sending on them or unhooking them breaks pings,
+		handshakes and staged tables on that carrier.
+	</p>
+</div>
+
+<h2>Which method do I want</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What you want to do</th><th>Method</th><th>Side</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Hear an event</td><td><code>On</code></td><td>Both</td></tr>
+		<tr><td>Stop hearing an event</td><td><code>Off</code></td><td>Both</td></tr>
+		<tr><td>Tell the server something</td><td><code>Emit</code></td><td>Client</td></tr>
+		<tr><td>Tell every player something</td><td><code>Broadcast</code></td><td>Server</td></tr>
+		<tr><td>Tell some players something</td><td><code>BroadcastTo</code></td><td>Server</td></tr>
+		<tr><td>Tell one player something</td><td><code>BroadcastTo({ player }, ...)</code></td><td>Server</td></tr>
+		<tr><td>Tell everyone but one player</td><td><code>BroadcastExcept</code></td><td>Server</td></tr>
+		<tr><td>Tell a group you set up earlier</td><td><code>SendToRoom</code>, see <a href="rooms.html">Rooms</a></td><td>Server</td></tr>
+		<tr><td>Ask the server and wait</td><td><code>Call</code>, see <a href="requests.html">Requests</a></td><td>Client</td></tr>
+		<tr><td>Ask one client and wait</td><td><code>CallTo</code>, see <a href="requests.html">Requests</a></td><td>Server</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>When a send quietly does nothing</h2>
+
+<p>
+	None of these error. That is deliberate, but it does mean a message can vanish
+	without a warning, so it is worth knowing the four cases.
+</p>
+
+<h3>An empty recipient list</h3>
+
+<p>
+	<code>BroadcastTo</code> with no one to send to returns immediately. Your outgoing
+	middleware does not even run, because the list is checked first.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>party:BroadcastTo({}, "Invite", "dungeon-3")  -- nothing happens</code></pre>
+</div>
+
+<p>
+	This bites when the list is built from a filter. An empty result and a full one look
+	the same from the call site.
+</p>
+
+<h3>A guarded channel filters the list</h3>
+
+<p>
+	If the carrier has a handshake guard, every send runs the recipient list past it
+	first and drops anyone who has not been let in. A global <code>Broadcast</code> on a
+	guarded carrier reaches only approved players, and if nobody has passed yet, it
+	reaches nobody.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player, token)
+end)
+
+-- Only the moderators who passed the guard hear this.
+mods:Broadcast("Alert", "someone is spawn camping")</code></pre>
+</div>
+
+<p>
+	The same door works inbound. An <code>Emit</code> from a client that has not passed
+	the guard is dropped before it reaches any handler. See
+	<a href="handshakes.html">Handshakes</a>.
+</p>
+
+<h3>The client has not called Init</h3>
+
+<p>
+	The server cannot push to a channel on a client until that client calls
+	<code>Init</code> on it. Until then the messages queue up, up to 64 per channel for
+	30 seconds, and arrive in order once the client is ready. Sending from the client
+	never needs <code>Init</code>. See <a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<h3>The carrier is dropped</h3>
+
+<p>
+	A carrier that has been destroyed, or whose transformer has been destroyed, goes
+	quiet instead of erroring. Sends return without doing anything. See
+	<a href="cleanup.html">Cleanup</a>.
+</p>
+
+<h2>Next</h2>
+
+<ul>
+	<li><a href="requests.html">Requests and Replies</a> when you need an answer back.</li>
+	<li><a href="rooms.html">Rooms</a> to send to a named group of players.</li>
+	<li><a href="../api/carrier.html">Carrier API</a> for the exact signatures.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

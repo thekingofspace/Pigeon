@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pigeon module | Pigeon</title>
+<meta name="description" content="API reference for the Pigeon module: new, StagedTable, Transformer, GetRef, Network and Types.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Pigeon</h1>
+
+<p class="lead">
+	The module you get back from <code>require</code>. It has four functions and two
+	fields. Most games only ever call the first function.
+</p>
+
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)</code></pre>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Member</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><a href="#pigeon-new"><code>Pigeon.new</code></a></td><td>Looks up or builds a carrier.</td></tr>
+		<tr><td><a href="#pigeon-stagedtable"><code>Pigeon.StagedTable</code></a></td><td>Builds a staged table.</td></tr>
+		<tr><td><a href="#pigeon-transformer"><code>Pigeon.Transformer</code></a></td><td>Builds a transformer.</td></tr>
+		<tr><td><a href="#pigeon-getref"><code>Pigeon.GetRef</code></a></td><td>Resolves the RemoteEvent a transformer rides on.</td></tr>
+		<tr><td><a href="#pigeon-network"><code>Pigeon.Network</code></a></td><td>The low level transport.</td></tr>
+		<tr><td><a href="#pigeon-types"><code>Pigeon.Types</code></a></td><td>The types module, which is just <code>true</code> at runtime.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	The same module runs on the server and on the client. Nothing here is one sided.
+	It is the carrier methods that split, and those are on the
+	<a href="carrier.html">Carrier</a> page.
+</p>
+
+<h2>Functions</h2>
+
+<h3 id="pigeon-new">Pigeon.new <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.new(name: string, options: {Unreliable: boolean?, Timeout: number?, Transformer: Transformer?}?) -&gt; PigeonCarrier</code></pre>
+</div>
+
+<p>
+	Returns the carrier for a channel name. The name is the channel and the only thing
+	both machines have to agree on. Build <code>Pigeon.new("Shop")</code> on the server
+	and on the client and those two are talking.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>name</code></td><td><code>string</code></td><td>The channel name. Must not be empty.</td></tr>
+		<tr><td><code>options</code></td><td><code>table?</code></td><td>Transport settings. Passing one at all skips the cache.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a carrier. See <a href="carrier.html">Carrier</a> for what you can do with it.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId)
+	return giveItem(player, itemId)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", updateShopUi)
+shop:Init()
+
+print(shop:Call("Buy", "sword"))</code></pre>
+</div>
+
+<h4>The caching rule</h4>
+
+<p>
+	There are two behaviours in one function. The options table is the switch.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Pigeon.new</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">just a name</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">look in the cache</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">the same carrier every time</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">name and options</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">skip the cache</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">a brand new carrier every time</span>
+	</div>
+</div>
+
+<pre><code>local a = Pigeon.new("Shop")
+local b = Pigeon.new("Shop")
+print(a == b) --&gt; true
+
+local c = Pigeon.new("Shop", { Timeout = 3 })
+local d = Pigeon.new("Shop", { Timeout = 3 })
+print(c == d) --&gt; false</code></pre>
+
+<p>
+	Options describe one particular carrier. If Pigeon handed back a cached one your
+	settings would be thrown away without a word, so it builds a fresh carrier instead.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		The only check is whether <code>options</code> is nil. Even
+		<code>Pigeon.new("Shop", {})</code> skips the cache, because an empty table is
+		still not nil. Pass nothing when you want the shared carrier.
+	</p>
+</div>
+
+<p>
+	The cache never hands back a dead carrier. A cached carrier removes itself when it
+	is dropped, whether that was <code>carrier:Destroy()</code> or its transformer being
+	destroyed, so the next call builds a live replacement. A carrier that comes back
+	already dropped is not cached at all.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+shop:Destroy()
+
+print(Pigeon.new("Shop") == shop) --&gt; false</code></pre>
+
+<h4>The options table</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>Unreliable</code></td>
+			<td><code>boolean?</code></td>
+			<td><code>false</code></td>
+			<td>Sends fire and forget messages over the lossy lane.</td>
+		</tr>
+		<tr>
+			<td><code>Timeout</code></td>
+			<td><code>number?</code></td>
+			<td><code>10</code> seconds</td>
+			<td>How long <code>Call</code> and <code>CallTo</code> wait for an answer.</td>
+		</tr>
+		<tr>
+			<td><code>Transformer</code></td>
+			<td><code>Transformer?</code></td>
+			<td>one built from <code>name</code></td>
+			<td>The transformer this carrier rides on.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>Unreliable</code> has to be exactly <code>true</code>. Anything else, including
+	a truthy value like <code>1</code>, leaves the carrier reliable. See
+	<a href="../guide/unreliable.html">Unreliable Sending</a>.
+</p>
+
+<p>
+	<code>Timeout</code> is stored on the carrier and left as <code>nil</code> when you
+	do not pass one, and the transport falls back to 10 seconds at send time. Both
+	<code>Unreliable</code> and <code>Timeout</code> stay on the carrier as plain fields,
+	so you can change them later.
+</p>
+
+<pre><code>local chat = Pigeon.new("Chat")
+
+chat.Timeout = 3
+chat.Unreliable = true</code></pre>
+
+<p>
+	<code>Transformer</code> puts several named channels on one remote and lets you drop
+	them all in one call. Leave it out and the carrier builds its own transformer using
+	the channel name as the uuid. See <a href="../guide/transformers.html">Transformers</a>.
+</p>
+
+<h4>Errors</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Error</th><th>When</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>ERR_NO_NAME</code></td>
+			<td><code>name</code> is not a string, or is the empty string.</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NO_TRANSFORMER</code></td>
+			<td><code>options.Transformer</code> was given but is not a table with a string <code>uuid</code>.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<pre><code>Pigeon.new("")                                  -- ERR_NO_NAME
+Pigeon.new("Shop", { Transformer = "Combat" })  -- ERR_NO_TRANSFORMER</code></pre>
+
+<p>
+	Both are raised inside Pigeon, one level up from the carrier constructor, so the
+	traceback lands on Pigeon's own line rather than on the call that made the carrier.
+	The error name is what tells you which of the two went wrong.
+</p>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Because options build a fresh carrier every time, you can end up with two
+		carriers on one name. Incoming messages are routed by name alone, so both of
+		them hear every packet and every listener on both fires. Keep the receiving side
+		to a single carrier per name.
+	</p>
+</div>
+
+<h3 id="pigeon-stagedtable">Pigeon.StagedTable <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.StagedTable(initial: {[any]: any}?) -&gt; StageTable</code></pre>
+</div>
+
+<p>
+	Builds a staged table: a plain table whose writes replicate to the clients holding
+	it. You write to it on the server and every client that has it sees the change.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>initial</code></td><td><code>{[any]: any}?</code></td><td>Starting contents. Deep copied in, not held by reference.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a staged table. See <a href="staged-table.html">StagedTable</a>.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local state = Pigeon.StagedTable({ round = 1, scores = {} })
+
+local carrier = Pigeon.new("Match")
+carrier:CaptureTable("match", state)
+
+local t = state:GetTable()
+t.round = 2
+t.scores.Alice = 10</code></pre>
+</div>
+
+<p>
+	Making one does not publish it. Nothing replicates until a server carrier captures
+	it with <code>CaptureTable</code> or pushes it out with <code>ForceTable</code>.
+	Clients get theirs from <code>RequestTable</code> rather than by building one.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>initial</code> is checked as it is copied, and a bad value errors right
+		there rather than later on the wire. Staged tables carry plain Roblox data only.
+	</p>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Error</th><th>What you put in</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>ERR_STAGE_UNSUPPORTED</code></td><td>A type that cannot travel as data, such as an Instance.</td></tr>
+		<tr><td><code>ERR_STAGE_BEHAVIOUR</code></td><td>A function or a thread.</td></tr>
+		<tr><td><code>ERR_STAGE_METATABLE</code></td><td>A table with a metatable, which includes class instances.</td></tr>
+		<tr><td><code>ERR_STAGE_CYCLE</code></td><td>A table that refers back into itself.</td></tr>
+		<tr><td><code>ERR_STAGE_TABLE_KEY</code></td><td>A table used as a key.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Each message names the path that broke it, like <code>root.stats.health</code>, so
+	you do not have to hunt for the offending field.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		The function is called <code>StagedTable</code> but the Luau type is called
+		<code>StageTable</code>. That is not a typo on this page. See
+		<a href="types.html">Types</a>.
+	</p>
+</div>
+
+<h3 id="pigeon-transformer">Pigeon.Transformer <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.Transformer(uuid: string?) -&gt; Transformer</code></pre>
+</div>
+
+<p>
+	Builds a transformer. A transformer decides which pooled RemoteEvent traffic rides
+	on, and it is the switch that turns a group of carriers off.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>uuid</code></td><td><code>string?</code></td><td>The identity to adopt. Left out, you get a fresh GUID.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a transformer. See <a href="transformer.html">Transformer</a>.</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local damage = Pigeon.new("Damage", { Transformer = combat })
+local status = Pigeon.new("Status", { Transformer = combat })
+
+-- One call drops both channels and every listener on them.
+combat:Destroy()</code></pre>
+
+<p>
+	The uuid is what gets hashed to pick a remote, so pass the same string on both
+	machines when both of them build one. A generated GUID is fine when the transformer
+	only exists to group things on one side.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		A carrier with no <code>Transformer</code> option builds one using its channel
+		name as the uuid. So <code>Pigeon.Transformer("Shop")</code> hashes to the same
+		remote as a plain <code>Pigeon.new("Shop")</code> carrier. Sharing a remote is
+		harmless. A carrier only hears events sent on its own channel name.
+	</p>
+</div>
+
+<p>
+	Building one has a side effect: it counts toward the number of transformers Pigeon
+	knows about, which is what the remote pool is sized from. On the server it also
+	creates the remote for that bucket straight away and republishes the pool size so
+	clients can find it. Destroying the transformer takes the count back down. See
+	<a href="../guide/ref-pool.html">The Ref Pool</a>.
+</p>
+
+<h3 id="pigeon-getref">Pigeon.GetRef <span class="badge badge--shared">Shared</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.GetRef(transformer: Transformer) -&gt; RemoteEvent</code></pre>
+</div>
+
+<p>
+	Resolves the pooled RemoteEvent a transformer's traffic goes out on. Carriers do
+	this for you, so you rarely need it. It is handy when you want to see which remote a
+	channel actually landed on.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>transformer</code></td><td><code>Transformer</code></td><td>The transformer to resolve.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> the reliable RemoteEvent serving that transformer.</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+local remote = Pigeon.GetRef(combat)
+
+print(remote.Name)          --&gt; PigeonRef_1
+print(remote.Parent.Name)   --&gt; PigeonRefs</code></pre>
+
+<p>
+	The remotes live in a folder called <code>PigeonRefs</code> under
+	<code>ReplicatedStorage</code>. Each bucket has a reliable
+	<code>PigeonRef_N</code> and an UnreliableRemoteEvent twin called
+	<code>PigeonRefU_N</code>. This function only gives you the reliable one.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		On the client this yields until the remote has replicated from the server. On the
+		server it creates the remote if it is not there yet, so it returns straight away.
+	</p>
+</div>
+
+<p>
+	Do not hold on to what you get back. The pool is one remote per 16 transformers, at
+	least 1 and at most 32, so the pool grows and shrinks as transformers come and go,
+	and the same uuid can move to a different bucket when it does. Ask again each time.
+</p>
+
+<p>
+	It also does not care whether the transformer was destroyed. A destroyed transformer
+	still hashes to a bucket, so you still get a remote back.
+</p>
+
+<h2>Fields</h2>
+
+<h3 id="pigeon-network">Pigeon.Network <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.Network: Network</code></pre>
+</div>
+
+<p>
+	The low level transport that carriers are built on. It owns the remote pool, the
+	buffering, the call timeouts and the raw send functions. You do not need it for
+	normal work, but it is the place to look when you want numbers.
+</p>
+
+<pre><code>print(Pigeon.Network.KnownTransformers)  -- how many transformers exist here
+print(Pigeon.Network.GetRefCount())      -- how many remotes the pool holds
+
+local counts = Pigeon.Network.Diagnostics()
+print(counts.pending, counts.bufferedPackets, counts.outbound)</code></pre>
+
+<p>
+	Full list on the <a href="network.html">Network</a> page.
+</p>
+
+<h3 id="pigeon-types">Pigeon.Types <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.Types: boolean</code></pre>
+</div>
+
+<p>
+	The types module. It holds nothing but <code>export type</code> declarations, and
+	the file returns <code>true</code>, so this field is the boolean <code>true</code> at
+	runtime. There is nothing in it to read or call.
+</p>
+
+<pre><code>print(Pigeon.Types)         --&gt; true
+print(typeof(Pigeon.Types)) --&gt; boolean</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		You cannot write <code>Pigeon.Types.PigeonCarrier</code> as a type annotation.
+		The types are re-exported on the module itself, so write
+		<code>Pigeon.PigeonCarrier</code>.
+	</p>
+</div>
+
+<h2>Exported types</h2>
+
+<p>
+	Five types are exported from the module for strict mode. They are re-exports of the
+	ones in the types module.
+</p>
+
+<pre><code>local shop: Pigeon.PigeonCarrier = Pigeon.new("Shop")
+local combat: Pigeon.Transformer = Pigeon.Transformer("Combat")
+local state: Pigeon.StageTable = Pigeon.StagedTable()</code></pre>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Type</th><th>What it describes</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Pigeon.PigeonCarrier</code></td><td>A carrier.</td></tr>
+		<tr><td><code>Pigeon.Transformer</code></td><td>A transformer.</td></tr>
+		<tr><td><code>Pigeon.StageTable</code></td><td>A staged table.</td></tr>
+		<tr><td><code>Pigeon.MiddlewareFunction</code></td><td>An incoming or outgoing middleware function.</td></tr>
+		<tr><td><code>Pigeon.StageGuard</code></td><td>A capture or release guard on a staged table.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>Pigeon.Transformer</code> is both a function and a type. Luau keeps values and
+	types apart, so the same name works in both places and nothing clashes.
+</p>
+
+<p>See <a href="types.html">Types</a> for the full definitions.</p>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

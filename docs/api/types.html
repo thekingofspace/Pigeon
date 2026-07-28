@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Types | Pigeon</title>
+<meta name="description" content="The Luau types Pigeon exports for strict mode, with the real definitions and how to annotate with each one.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Types</h1>
+
+<p class="lead">
+	Pigeon exports five Luau types. You only need them if you run strict mode or if you
+	pass Pigeon objects between your own functions and want them annotated. This page
+	shows each definition as it is written and how to use it.
+</p>
+
+<h2>Using them</h2>
+
+<p>
+	The types hang off the module you already required. Luau keeps types and values in
+	separate namespaces, so the same <code>Pigeon</code> name works for both.
+</p>
+
+<pre><code>--!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop: Pigeon.PigeonCarrier = Pigeon.new("Shop")</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not reach through <code>Pigeon.Types</code>. That field is the boolean
+		<code>true</code> at runtime, because the types file holds only type declarations
+		and returns <code>true</code>. Write <code>Pigeon.PigeonCarrier</code>, not
+		<code>Pigeon.Types.PigeonCarrier</code>.
+	</p>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Type</th><th>What it describes</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><a href="#transformer"><code>Pigeon.Transformer</code></a></td><td>A transformer.</td></tr>
+		<tr><td><a href="#stagetable"><code>Pigeon.StageTable</code></a></td><td>A staged table.</td></tr>
+		<tr><td><a href="#pigeoncarrier"><code>Pigeon.PigeonCarrier</code></a></td><td>A carrier.</td></tr>
+		<tr><td><a href="#middlewarefunction"><code>Pigeon.MiddlewareFunction</code></a></td><td>A middleware function.</td></tr>
+		<tr><td><a href="#stageguard"><code>Pigeon.StageGuard</code></a></td><td>A capture or release guard.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>The types</h2>
+
+<h3 id="transformer">Transformer</h3>
+
+<pre><code>export type Transformer = {
+	uuid: string,
+	destroyed: boolean,
+	_teardown: {() -&gt; ()},
+	Track: (self: Transformer, disconnect: () -&gt; ()) -&gt; (() -&gt; ()),
+	Destroy: (self: Transformer) -&gt; ()
+}</code></pre>
+
+<p>
+	The object <a href="pigeon.html#pigeon-transformer"><code>Pigeon.Transformer</code></a>
+	returns. <code>uuid</code> is the string that gets hashed to pick a remote, and
+	<code>destroyed</code> flips to <code>true</code> once and stays there.
+</p>
+
+<pre><code>local combat: Pigeon.Transformer = Pigeon.Transformer("Combat")
+local connection = workspace.ChildAdded:Connect(onPartAdded)
+
+local untrack: () -&gt; () = combat:Track(function()
+	connection:Disconnect()
+end)</code></pre>
+
+<p>
+	<code>_teardown</code> is the list of functions <code>Track</code> collects. It is in
+	the type but it is not for you. Use <code>Track</code> and the handle it hands back.
+	See <a href="transformer.html">Transformer</a>.
+</p>
+
+<h3 id="stagetable">StageTable</h3>
+
+<pre><code>export type StageTable = {
+	GetTable: (self: StageTable) -&gt; {[any]: any},
+
+	UseCapture: (self: StageTable, Callback: (...any) -&gt; ()) -&gt; (),
+	UseRelease: (self: StageTable, Callback: (...any) -&gt; ()) -&gt; (),
+	Release: (self: StageTable) -&gt; ()
+}</code></pre>
+
+<p>
+	The object <a href="pigeon.html#pigeon-stagedtable"><code>Pigeon.StagedTable</code></a>
+	returns. Note the names differ by one letter: the function is
+	<code>StagedTable</code>, the type is <code>StageTable</code>.
+</p>
+
+<pre><code>local state: Pigeon.StageTable = Pigeon.StagedTable({ round = 1 })
+
+local view: {[any]: any} = state:GetTable()
+view.round = 2</code></pre>
+
+<p>
+	<code>GetTable</code> is typed as a plain <code>{[any]: any}</code>, so the checker
+	will let you write anything into it. What you write is still checked at runtime, and
+	a value that cannot travel as data errors on the spot. See
+	<a href="staged-table.html">StagedTable</a>.
+</p>
+
+<h3 id="pigeoncarrier">PigeonCarrier</h3>
+
+<pre><code>export type PigeonCarrier = {
+	Unreliable: boolean,
+
+	--Server
+	BroadcastTo: (self: PigeonCarrier, Players: {Player}, event: string, ...any) -&gt; (),
+	Broadcast: (self: PigeonCarrier, event: string, ...any) -&gt; (),
+	BroadcastExcept: (self: PigeonCarrier, Players: {Player}, event: string, ...any) -&gt; (),
+	CallTo: (self: PigeonCarrier, Target: Player, Event: string, ...any) -&gt; ...any,
+	SendToRoom: (self: PigeonCarrier, Room: string, event: string, ...any) -&gt; (),
+	CreateRoom: (self: PigeonCarrier, RoomID: string, Players: {Player}) -&gt; (),
+	DestroyRoom: (self: PigeonCarrier, RoomID: string) -&gt; (),
+	JoinRoom: (self: PigeonCarrier, RoomID: string, Players: {Player} | Player) -&gt; (),
+	LeaveRoom: (self: PigeonCarrier, RoomID: string, Players: {Player} | Player) -&gt; (),
+
+	CaptureTable: (self: PigeonCarrier, id: string, Table: StageTable) -&gt; (),
+	ReleaseTable: (self: PigeonCarrier, id: string) -&gt; (),
+	ForceTable: (self: PigeonCarrier, id: string, Table: StageTable, Targets: ({Player} | Player)?) -&gt; (),
+
+	UseHandshake: (self: PigeonCarrier, Callback: (player: Player, ...any) -&gt; boolean) -&gt; (),
+	Approved: (self: PigeonCarrier, Targets: {Player}?) -&gt; {Player},
+
+	--Client
+	Emit: (self: PigeonCarrier, event: string, ...any) -&gt; (),
+	Call: (self: PigeonCarrier, event: string, ...any) -&gt; ...any,
+	RequestTable: (self: PigeonCarrier, id: string) -&gt; StageTable,
+	Ping: (self: PigeonCarrier) -&gt; number,
+	Handshake: (self: PigeonCarrier, ...any) -&gt; boolean,
+	Init: (self: PigeonCarrier) -&gt; PigeonCarrier,
+
+	--Shared
+	On: (self: PigeonCarrier, event: string, Callback: (...any) -&gt; ...any) -&gt; (),
+	Off: (self: PigeonCarrier, event: string, Callback: (() -&gt; ())?) -&gt; (),
+
+	UseIncoming: (self: PigeonCarrier, Callback: (...any) -&gt; ()) -&gt; (),
+	UseOutgoing: (self: PigeonCarrier, Callback: (...any) -&gt; ()) -&gt; (),
+
+	Destroy: (self: PigeonCarrier) -&gt; ()
+}</code></pre>
+
+<p>
+	The object <a href="pigeon.html#pigeon-new"><code>Pigeon.new</code></a> returns. Every
+	method takes <code>self</code> first, so you call them all with a colon.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop: Pigeon.PigeonCarrier = Pigeon.new("Shop")
+
+local function announce(carrier: Pigeon.PigeonCarrier, stock: {any})
+	carrier:Broadcast("StockChanged", stock)
+end
+
+announce(shop, getStock())</code></pre>
+</div>
+
+<p>
+	One type covers both machines. The comments in the definition say which side each
+	method belongs to. A server method called on the client errors with
+	<code>ERR_NOT_SERVER</code>, and a client method called on the server errors with
+	<code>ERR_NOT_CLIENT</code>. Two of them do not follow that rule:
+	<code>Approved</code> has no side check at all, and <code>Init</code> is a no-op on
+	the server so shared code can call it either way. The checker will not stop you, so
+	the comments are the only warning you get. See <a href="carrier.html">Carrier</a>.
+</p>
+
+<p>
+	<code>On</code> takes the same callback type on both sides, but the arguments differ.
+	A server listener is handed the sending player first, a client listener is not.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player: Player, itemId: string)
+	return giveItem(player, itemId)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", function(stock: {any})
+	updateShopUi(stock)
+end)
+
+shop:Init()</code></pre>
+</div>
+
+<h3 id="middlewarefunction">MiddlewareFunction</h3>
+
+<pre><code>export type MiddlewareFunction = (direction: string, event: string, args: {any}, player: Player?) -&gt; (string?, {any}?)</code></pre>
+
+<p>
+	The shape of a function you hand to <code>UseIncoming</code> or
+	<code>UseOutgoing</code>. Middleware sees every packet the carrier handles and can
+	rewrite it before it goes on.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>direction</code></td><td><code>string</code></td><td>Either <code>"incoming"</code> or <code>"outgoing"</code>.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name as you wrote it, such as <code>"Buy"</code>.</td></tr>
+		<tr><td><code>args</code></td><td><code>{any}</code></td><td>The arguments as an array.</td></tr>
+		<tr><td><code>player</code></td><td><code>Player?</code></td><td>The other machine's player, on the server only.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>event</code> is the carrier local name, not the name that travels. The channel
+	prefix is added after outgoing middleware has run and is already gone by the time
+	incoming middleware runs, so you always see the plain name.
+</p>
+
+<p>
+	Both returns are optional, and each is used only if it is the right type. Return a
+	string to rename the event. Return a table to replace the arguments. Return nothing
+	and the packet passes through untouched.
+</p>
+
+<p>
+	Renaming does a different job in each direction. Outgoing, the new name is what
+	travels, so the other machine has to listen for that name. Incoming, the new name
+	picks which of your listeners runs, and the transport only delivers events you
+	already bound with <code>On</code>, so the original name still needs a listener for
+	the packet to reach middleware at all.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+
+local log: Pigeon.MiddlewareFunction = function(direction, event, args, player)
+	print(direction, event, #args, player)
+	return nil, nil
+end
+
+-- Written as "Buy", it arrives on the far side as "Purchase".
+local rename: Pigeon.MiddlewareFunction = function(_direction, event, args)
+	if event == "Buy" then
+		return "Purchase", args
+	end
+	return nil, nil
+end
+
+shop:UseIncoming(log)
+shop:UseOutgoing(rename)</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		<code>player</code> is not filled in as often as you might expect on the way out.
+		Incoming on the server it is the player who sent the packet. Outgoing on the
+		server only <code>CallTo</code> fills it in, with the player being asked, and the
+		broadcast methods leave it <code>nil</code>. On the client it is always
+		<code>nil</code>.
+	</p>
+</div>
+
+<p>
+	Middleware runs in the order you added it, and each one is handed what the previous
+	one produced. If yours errors, Pigeon warns and moves on to the next with the packet
+	unchanged. See <a href="../guide/middleware.html">Middleware</a>.
+</p>
+
+<h3 id="stageguard">StageGuard</h3>
+
+<pre><code>export type StageGuard = (player: Player, id: string) -&gt; boolean?</code></pre>
+
+<p>
+	The shape of a function you hand to <code>UseCapture</code> or
+	<code>UseRelease</code> on a staged table. It runs on the server when a client asks
+	for that table or asks to stop receiving it.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>player</code></td><td><code>Player</code></td><td>The client asking.</td></tr>
+		<tr><td><code>id</code></td><td><code>string</code></td><td>The id the table was captured under.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Return <code>false</code> to block the attempt. Anything else allows it, including
+	<code>nil</code> and returning nothing at all, so a guard that forgets to return is a
+	guard that lets everyone through.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ownerOnly: Pigeon.StageGuard = function(player, id)
+	return id == "profile_" .. player.UserId
+end
+
+local profiles = Pigeon.new("Profiles")
+
+local function publish(owner: Player)
+	local profile = Pigeon.StagedTable({ coins = 0 })
+	profile:UseCapture(ownerOnly)
+	profiles:CaptureTable("profile_" .. owner.UserId, profile)
+end</code></pre>
+</div>
+
+<p>
+	Guards run in the order added and every one has to pass. The first <code>false</code>
+	ends it. If a guard errors, the attempt is blocked, so a broken guard fails shut
+	rather than open.
+</p>
+
+<p>
+	Capture guards only judge requests a client made. <code>ForceTable</code> is the
+	server deciding, so it does not ask them. See
+	<a href="../guide/staged-tables.html">Staged Tables</a>.
+</p>
+
+<h2>What the list leaves out</h2>
+
+<p>
+	These types describe the public surface, not the whole object. Some things that exist
+	at runtime are not in them.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Missing from</th><th>What</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>PigeonCarrier</code></td>
+			<td><code>Timeout</code>, which is a real field set from the options table.</td>
+		</tr>
+		<tr>
+			<td><code>StageTable</code></td>
+			<td><code>Snapshot</code>, <code>ApplySnapshot</code>, <code>ApplyPatches</code>, <code>CanCapture</code> and <code>CanRelease</code>, which Pigeon uses itself.</td>
+		</tr>
+		<tr>
+			<td>All three objects</td>
+			<td>The private fields, the ones starting with an underscore.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<code>Transformer._teardown</code> is the exception. It is in the type, but it is
+	still internal.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		The callback parameters on <code>UseIncoming</code>, <code>UseOutgoing</code>,
+		<code>UseCapture</code> and <code>UseRelease</code> are all typed loosely as
+		<code>(...any) -&gt; ()</code> rather than as
+		<code>MiddlewareFunction</code> and <code>StageGuard</code>. Annotate your
+		function where you write it, the way the samples above do, and the checker still
+		has something to work with.
+	</p>
+</div>
+
+<p>
+	Everything in the types is real. Nothing listed is missing at runtime, so if the
+	checker accepts a call, that method exists.
+</p>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

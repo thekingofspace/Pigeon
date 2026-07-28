@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Pigeon | Pigeon</title>
+<meta name="description" content="What one RemoteEvent per feature costs you, and what Pigeon does instead.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Why Pigeon</h1>
+
+<p class="lead">
+	Almost every Roblox game networks the same way: one RemoteEvent per feature. That
+	shape causes five specific problems. This page names them, shows what Pigeon does
+	about each, and then says what is actually new here.
+</p>
+
+<h2>What everyone does today</h2>
+
+<p>
+	You add a feature. You make a RemoteEvent for it, give it a name, parent it into
+	<code>ReplicatedStorage</code>, and on the client you <code>WaitForChild</code> it
+	before you connect a handler.
+</p>
+
+<pre><code>-- Server
+local shopEvent = Instance.new("RemoteEvent")
+shopEvent.Name = "ShopEvent"
+shopEvent.Parent = ReplicatedStorage
+
+shopEvent.OnServerEvent:Connect(function(player, action, itemId)
+	-- one handler, one big if-else, one place to forget a check
+end)
+
+-- Client
+local shopEvent = ReplicatedStorage:WaitForChild("ShopEvent")
+shopEvent.OnClientEvent:Connect(onShopMessage)</code></pre>
+
+<p>
+	Nothing here is wrong. It works. It just does not hold up as the game grows, for
+	five reasons.
+</p>
+
+<h2>The five problems</h2>
+
+<h3>1. The Instance count tracks the feature count</h3>
+
+<p>
+	Forty features means forty RemoteEvents. Every one is an Instance you create,
+	name, parent, find and wait for. Half the boilerplate in a networking module is
+	just moving Instances around.
+</p>
+
+<h3>2. Startup is a race you lose</h3>
+
+<p>
+	The server fires. The client has not connected its handler yet. The message is
+	gone, and nothing tells you it happened. The usual fix is to make the client ask
+	for a fresh copy of everything once it loads, which is a second code path doing
+	the same job as the first.
+</p>
+
+<h3>3. Any client can fire any remote</h3>
+
+<p>
+	A RemoteEvent in <code>ReplicatedStorage</code> is visible to every client, and
+	any of them can fire it with any arguments. Access checks live inside each
+	handler, so every new handler is a new chance to forget one. There is no way to
+	say "this channel is for moderators" and have it be true.
+</p>
+
+<h3>4. Keeping state in sync is hand written</h3>
+
+<p>
+	You have a table on the server. You want the client to see it. So you write the
+	diffing, the sending, the applying, and a separate "here is the whole thing"
+	path for when a player joins. Then you write it again for the next table.
+</p>
+
+<h3>5. Turning a system off is manual</h3>
+
+<p>
+	Shutting a feature down means remembering every connection it made. Miss one and
+	it keeps firing into dead code. There is no handle that means "this whole
+	system".
+</p>
+
+<h2>How Pigeon answers them</h2>
+
+<h3>1. One pool of remotes, shared</h3>
+
+<p>
+	Pigeon does not make a RemoteEvent per channel. It keeps a small pool and hashes
+	each channel onto one of them. The pool is one RemoteEvent per 16 transformers,
+	never fewer than 1 and never more than 32. Each slot has a reliable RemoteEvent
+	and an UnreliableRemoteEvent twin, so the ceiling is 64 remotes no matter how many
+	channels you have.
+</p>
+
+<p>
+	You never touch any of it. You name a channel and send on it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+shop:Broadcast("StockChanged", getStock())</code></pre>
+</div>
+
+<p>See <a href="ref-pool.html">The Ref Pool</a>.</p>
+
+<h3>2. The channel opens when you say so</h3>
+
+<p>
+	The client calls <code>Init()</code> on a channel once its handlers are in place.
+	Until then the server holds everything addressed to that client on that channel,
+	up to 64 packets, for 30 seconds. When <code>Init</code> lands, the backlog
+	arrives in the order it was held. Unreliable sends are the one exception. They
+	are dropped rather than held, because a packet allowed to go missing in transit
+	has no business turning up late.
+</p>
+
+<div class="flow">
+	<p class="flow__label">A message sent before the client is ready</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">server broadcasts</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">client has not called Init</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">held on the server</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">client calls Init</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">backlog arrives, in order</span>
+	</div>
+</div>
+
+<p>
+	Readiness is per channel. Bringing "Shop" up does not release "Combat", so a
+	channel's backlog never lands in a handler that does not exist yet.
+</p>
+
+<p>See <a href="startup.html">Startup and Buffering</a>.</p>
+
+<h3>3. One guard per channel</h3>
+
+<p>
+	Install a handshake guard on the server and the channel is closed by default. A
+	client has to pass the guard before that channel will carry anything for them.
+	The check sits in one place, not in every handler.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player, token)
+end)
+
+-- Only clients the guard approved receive this.
+mods:Broadcast("Alert", "someone is spawning parts")</code></pre>
+</div>
+
+<p>See <a href="handshakes.html">Handshakes</a>.</p>
+
+<h3>4. Tables that replicate themselves</h3>
+
+<p>
+	A staged table is a plain table. Write to it on the server and every client
+	holding it sees the write. There is no diffing to write and no snapshot path to
+	maintain, because requesting the table gives you the current contents first and
+	the updates after.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local match = Pigeon.StagedTable({ round = 1, scores = {} })
+local carrier = Pigeon.new("Match")
+
+carrier:CaptureTable("live", match)
+
+local data = match:GetTable()
+data.round = 2                 -- every client holding it sees this</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local carrier = Pigeon.new("Match")
+carrier:Init()
+
+local match = carrier:RequestTable("live")
+print(match:GetTable().round)</code></pre>
+</div>
+
+<p>See <a href="staged-tables.html">Staged Tables</a>.</p>
+
+<h3>5. One call turns a group off</h3>
+
+<p>
+	Everything a carrier subscribes to is tracked. <code>carrier:Destroy()</code>
+	disconnects all of it. Put several carriers on one transformer and
+	<code>transformer:Destroy()</code> drops the whole group at once.
+</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local damage = Pigeon.new("Damage", { Transformer = combat })
+local status = Pigeon.new("Status", { Transformer = combat })
+local effects = Pigeon.new("Effects", { Transformer = combat })
+
+-- One call drops all three channels and every listener on them.
+combat:Destroy()</code></pre>
+
+<p>See <a href="cleanup.html">Cleanup</a>.</p>
+
+<h2>Side by side</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Concern</th><th>Plain RemoteEvents</th><th>Pigeon</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Instance count</td>
+			<td>One per feature, and it only ever grows.</td>
+			<td>A shared pool. One remote per 16 transformers, capped at 32 pairs.</td>
+		</tr>
+		<tr>
+			<td>Startup race</td>
+			<td>Fire before the client connects and the message is gone.</td>
+			<td>Held per channel until <code>Init</code>. Up to 64 packets, for 30 seconds.</td>
+		</tr>
+		<tr>
+			<td>Access control</td>
+			<td>Any client can fire any remote. Checks live in each handler.</td>
+			<td>One handshake guard per channel, closing it in both directions.</td>
+		</tr>
+		<tr>
+			<td>State replication</td>
+			<td>You write the diffing, the sending and the join path.</td>
+			<td>Write to a staged table. Writes batch and replicate on their own.</td>
+		</tr>
+		<tr>
+			<td>Teardown</td>
+			<td>Disconnect every connection by hand.</td>
+			<td><code>carrier:Destroy()</code>, or one <code>transformer:Destroy()</code> for a group.</td>
+		</tr>
+		<tr>
+			<td>Request and response</td>
+			<td>A separate RemoteFunction, and an invoke that can yield forever.</td>
+			<td><code>Call</code> and <code>CallTo</code> on the same channel, 10 second default timeout.</td>
+		</tr>
+		<tr>
+			<td>Rooms</td>
+			<td>Keep your own player lists and prune them on leave.</td>
+			<td><code>CreateRoom</code>, <code>JoinRoom</code>, <code>SendToRoom</code>. Leavers are pruned for you.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>What is actually new here</h2>
+
+<p>
+	Plenty of libraries wrap RemoteEvents in nicer functions. Four things in Pigeon
+	are not wrapping.
+</p>
+
+<h3>A shared hashed remote pool</h3>
+
+<p>
+	Instance count stops tracking feature count. A stable hash of the transformer
+	uuid picks the remote, and a carrier takes that uuid from its channel name. Two
+	hundred channels ride on thirteen remotes and their thirteen unreliable twins.
+	The server sizes the pool and publishes that size as an attribute, so both
+	machines hash into the same slot rather than guessing from their own local
+	counts.
+</p>
+
+<p>See <a href="ref-pool.html">The Ref Pool</a>.</p>
+
+<h3>Per channel readiness</h3>
+
+<p>
+	Not "the client is loaded", which is one flag for the whole game. Each channel
+	declares itself ready on its own, and only that channel's backlog is released.
+	One system coming up early cannot flush another system's messages into handlers
+	that have not been registered yet.
+</p>
+
+<p>See <a href="startup.html">Startup and Buffering</a>.</p>
+
+<h3>A handshake that closes the channel in both directions</h3>
+
+<p>
+	This is the part most access control misses. A guarded carrier will not deliver
+	what an unapproved client sends, and it will not include that client in what the
+	server sends. Every inbound packet passes one door and every outbound path
+	filters through one approval list, so a plain
+	<code>Broadcast</code> on a moderator channel is safe to write.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		The guard runs on every attempt, so a client refused now can be admitted later
+		without rebuilding anything. A later attempt that fails also revokes an earlier
+		grant. Keep the guard cheap, because a client may ask as often as it likes.
+	</p>
+</div>
+
+<p>See <a href="handshakes.html">Handshakes</a>.</p>
+
+<h3>Plain tables that replicate themselves</h3>
+
+<p>
+	Not a state class with getters and setters. You write
+	<code>data.stats.health = 90</code> and that write replicates, nested path and
+	all. A burst of writes in the same frame coalesces into one patch, so filling a
+	table field by field costs one send instead of one per field.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Staged tables carry data, not objects. Instances, functions, threads,
+		metatables and cycles are rejected when you write them, rather than arriving as
+		<code>nil</code> on the far side.
+	</p>
+</div>
+
+<p>See <a href="staged-tables.html">Staged Tables</a>.</p>
+
+<h2>Where to go next</h2>
+
+<p>
+	The fastest way to judge any of this is to build a channel and watch it work.
+</p>
+
+<ul>
+	<li><a href="installation.html">Installation</a> to add Pigeon to a place.</li>
+	<li><a href="getting-started.html">Getting Started</a> to build your first channel.</li>
+</ul>
+
+<p>
+	Pigeon takes its shape from roblox-sockets, which is where the idea of a named
+	two-sided channel over a shared transport came from. See
+	<a href="credits.html">Credits</a>.
+</p>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

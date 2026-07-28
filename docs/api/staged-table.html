@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StagedTable | Pigeon</title>
+<meta name="description" content="API reference for the Pigeon staged table: GetTable, the capture and release guards, Release, and the snapshot and patch methods.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>StagedTable</h1>
+
+<p class="lead">
+	A staged table is a plain table whose changes replicate. Write to it on the server
+	and every client holding it sees the write. Create one with
+	<a href="pigeon.html"><code>Pigeon.StagedTable</code></a>.
+</p>
+
+<p>
+	The <a href="../guide/staged-tables.html">Staged Tables</a> guide covers the day to
+	day use. This page is the method by method reference, plus the rules about what may
+	go inside one.
+</p>
+
+<h2>Getting one</h2>
+
+<p>
+	The server makes the table and a carrier publishes it under an id. The client asks
+	for that id and gets a live mirror back.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local staged = Pigeon.StagedTable({ health = 100, coins = 0 })
+
+local data = Pigeon.new("PlayerData")
+data:CaptureTable("Stats", staged)
+
+-- This write goes out to everyone holding the table.
+staged:GetTable().coins = 25</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local data = Pigeon.new("PlayerData")
+data:Init()
+
+local staged = data:RequestTable("Stats")
+print(staged:GetTable().coins) --&gt; 25</code></pre>
+</div>
+
+<p>
+	The starting contents are copied in, and checked as they are copied. If you pass
+	something a staged table cannot carry, <code>Pigeon.StagedTable</code> errors on that
+	line. See <a href="#write-errors">Write errors</a> below for the five messages.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		None of the methods on this page check which side you are on. Nothing here
+		raises <code>ERR_NOT_SERVER</code> or <code>ERR_NOT_CLIENT</code>. The badges say
+		where each one is worth calling.
+	</p>
+</div>
+
+<h2>Methods</h2>
+
+<h3>GetTable <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:GetTable() -> {[any]: any}</code></pre>
+</div>
+
+<p>
+	Returns the live view of the table. This is the thing you read and write. Writing to
+	it is what makes replication happen.
+</p>
+
+<p><strong>Returns</strong> the view. It takes no arguments.</p>
+
+<pre><code>local view = staged:GetTable()
+
+view.health = 80
+view.stats = { speed = 16 }
+view.stats.speed = 24
+print(view.health) --&gt; 80</code></pre>
+
+<h4>What a write does on each side</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Side</th><th>What happens when you write</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Server</td>
+			<td>The write lands locally and is queued as a patch. Everything written in the same frame goes out as one packet to the clients holding the table.</td>
+		</tr>
+		<tr>
+			<td>Client</td>
+			<td>The write lands locally and stops there. Nothing is sent back. The next patch from the server can overwrite it.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	On the server, patches only go to clients that captured the table, either by asking
+	for it with <code>RequestTable</code> or by being handed it with
+	<code>ForceTable</code>. A client that never captured it hears nothing.
+</p>
+
+<p>
+	Writes made before a carrier captures the table are kept. They are in the store, so
+	the first snapshot a client receives already includes them.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		The view is not a real table. It is a userdata proxy, so
+		<code>typeof(view)</code> is <code>"userdata"</code> and anything that needs a
+		genuine table, such as <code>table.insert</code>, <code>table.remove</code> or
+		<code>table.concat</code>, will not take it. Read and write keys directly
+		instead. See <a href="#the-view-proxy">The view proxy</a>.
+	</p>
+</div>
+
+<h3>UseCapture <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:UseCapture(callback: (player: Player, id: string) -> boolean?) -> ()</code></pre>
+</div>
+
+<p>
+	Adds a guard that runs before a client is allowed to capture this table. Return
+	<code>false</code> to refuse. Anything else lets them through.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>callback</code></td><td><code>(player, id) -> boolean?</code></td><td>Gets the player asking and the id the table was published under.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local staged = Pigeon.StagedTable(profile)
+
+staged:UseCapture(function(player, id)
+	return player.UserId == ownerUserId
+end)</code></pre>
+</div>
+
+<p>
+	Guards are added, not replaced. Call <code>UseCapture</code> twice and both run, and
+	both have to agree. They run in the order you added them and the first refusal stops
+	the rest.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A guard that errors counts as a refusal, and the error is swallowed. Nothing is
+		printed. If your guard does something that can fail, wrap it in your own
+		<code>pcall</code> so you can see what went wrong.
+	</p>
+</div>
+
+<h4>When guards are consulted</h4>
+
+<p>
+	Only on the server, and only for a client asking with <code>RequestTable</code>. A
+	server side <code>ForceTable</code> skips them, because that is the server deciding
+	rather than a client asking. Adding a guard later does not take the table away from
+	clients that already hold it.
+</p>
+
+<h3>UseRelease <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:UseRelease(callback: (player: Player, id: string) -> boolean?) -> ()</code></pre>
+</div>
+
+<p>
+	The same thing for a client giving the table up. Return <code>false</code> to keep
+	that client on the subscriber list.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>callback</code></td><td><code>(player, id) -> boolean?</code></td><td>Gets the player releasing and the published id.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>staged:UseRelease(function(player, id)
+	print(player.Name, "let go of", id)
+	return true
+end)</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Refusing a release does not give the table back to the client. By the time the
+		server hears about it, the client has already dropped its own mirror. All a
+		refusal does is keep the server sending patches that the client will ignore. Use
+		this for bookkeeping, not for pinning a client to a table.
+	</p>
+</div>
+
+<h3>CanCapture <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:CanCapture(player: Player) -> boolean</code></pre>
+</div>
+
+<p>
+	Runs every capture guard for a player and says whether they all allowed it. Pigeon
+	calls this itself when a client requests the table, so you rarely need to. It is
+	public so you can check the same rule before pushing a table out yourself.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>player</code></td><td><code>Player</code></td><td>The player to test the guards against.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> <code>true</code> if every guard allowed it, or if there are
+	no guards at all. <code>false</code> as soon as one refuses.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>if staged:CanCapture(player) then
+	data:ForceTable("Stats", staged, player)
+end</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Guards are handed the id the table was captured under. That id is only set once
+		<code>CaptureTable</code> or <code>ForceTable</code> has published the table, so
+		a guard called before then gets <code>nil</code>.
+	</p>
+</div>
+
+<h3>CanRelease <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:CanRelease(player: Player) -> boolean</code></pre>
+</div>
+
+<p>
+	The same for the release guards. Pigeon calls it when a client tells the server it
+	has let go of the table.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>player</code></td><td><code>Player</code></td><td>The player to test the guards against.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> <code>true</code> when every guard allowed it. A guard that
+	errors makes it <code>false</code>.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>print(staged:CanRelease(player)) --&gt; true when nothing objects</code></pre>
+</div>
+
+<h3>Release <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:Release() -> ()</code></pre>
+</div>
+
+<p>
+	Gives up this view of the table. It runs once. Calling it again does nothing.
+</p>
+
+<p><strong>Returns</strong> nothing. It takes no arguments.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local data = Pigeon.new("PlayerData")
+data:Init()
+
+local staged = data:RequestTable("Stats")
+
+-- Done with it. Stop the server sending patches for this table.
+staged:Release()
+
+-- A later request fetches it again, with a fresh round trip.
+local again = data:RequestTable("Stats")</code></pre>
+</div>
+
+<p>On the client this does three things:</p>
+
+<ul>
+	<li>Marks the mirror released.</li>
+	<li>Drops it from the carrier's cache, so the next <code>RequestTable</code> fetches a new one.</li>
+	<li>Tells the server, which runs the release guards and drops you from the subscriber list if they allow it.</li>
+</ul>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		On the server this does far less than the name suggests. A server side staged
+		table has no release hook attached, so <code>Release</code> only flips a flag. It
+		does not stop replication and it does not drop subscribers. Server side
+		replication stops when the carrier that captured the table is destroyed.
+	</p>
+</div>
+
+<p>
+	<code>carrier:ReleaseTable(id)</code> is a different thing again. It drops the
+	carrier's pointer to the table, so no new client can request that id, but clients
+	already holding it keep receiving patches.
+</p>
+
+<h2>Lower level methods</h2>
+
+<p>
+	Pigeon calls these three for you. The server takes a snapshot when a client captures
+	the table, and the client applies snapshots and patches as they land. You only reach
+	for them when you are moving a staged table around by hand, say into a test or
+	through some other transport.
+</p>
+
+<h3>Snapshot <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:Snapshot() -> any</code></pre>
+</div>
+
+<p>
+	Returns the whole table in wire form. This is what the server sends to a client that
+	has just captured it.
+</p>
+
+<p><strong>Returns</strong> the encoded contents. It takes no arguments.</p>
+
+<pre><code>local staged = Pigeon.StagedTable({ health = 100, [1] = "first" })
+
+local snapshot = staged:Snapshot()
+
+-- One array of keys and one of values, paired by position. The order is
+-- whatever the table iterated in, so it may come out the other way round.
+--&gt; { K = { "health", 1 }, V = { 100, "first" } }</code></pre>
+
+<h4>Why the wire form looks like that</h4>
+
+<p>
+	Roblox only serialises tables keyed by strings or by integers, and it quietly mangles
+	a table that mixes the two. A staged table allows any value as a key, so no table
+	ever travels as a keyed table. Each one travels as two plain arrays, one of keys and
+	one of values, which are always safe. Leaves pass through untouched, so every table
+	on the wire is one of these envelopes and decoding is never ambiguous.
+</p>
+
+<p>
+	The order of the two arrays is whatever order the table happened to iterate in. It is
+	not sorted and it is not stable between runs.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		A snapshot is not a readable copy of your data. Do not try to index it like the
+		original. Hand it to <code>ApplySnapshot</code> to get the table back.
+	</p>
+</div>
+
+<h3>ApplySnapshot <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:ApplySnapshot(snapshot: any) -> ()</code></pre>
+</div>
+
+<p>
+	Empties the table and refills it from a wire form snapshot. This is what a client does
+	when the first snapshot arrives.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>snapshot</code></td><td><code>any</code></td><td>Wire form contents, as produced by <code>Snapshot</code>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>local copy = Pigeon.StagedTable()
+copy:ApplySnapshot(staged:Snapshot())
+
+print(copy:GetTable().health)</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		This writes straight into the store, under the view rather than through it. So it
+		replicates nothing and it checks nothing. On the server that means your clients
+		are now holding different data from you, and whatever you passed in is sitting in
+		the table whether a staged table could carry it or not.
+	</p>
+</div>
+
+<p>
+	Give it <code>Snapshot</code> output. Anything else is read as an envelope, and a
+	table with no <code>K</code> and no <code>V</code> decodes to an empty table rather
+	than erroring.
+</p>
+
+<h3>ApplyPatches <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>stagedTable:ApplyPatches(patches: {{path: {any}, value: any}}) -> ()</code></pre>
+</div>
+
+<p>
+	Folds a list of changes into the table, in order. Each patch is a path from the root
+	and a wire form value. This is what a client does with every patch the server
+	broadcasts.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>patches</code></td><td><code>{{path: {any}, value: any}}</code></td><td>The changes to apply, oldest first.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>staged:ApplyPatches({
+	{ path = { "health" }, value = 80 },
+	{ path = { "stats", "speed" }, value = 16 },
+})
+
+print(staged:GetTable().stats.speed) --&gt; 16</code></pre>
+
+<h4>Details worth knowing</h4>
+
+<ul>
+	<li>Missing links in a path are created. The second patch above builds <code>stats</code> if it is not there.</li>
+	<li>Anything in the way that is not a table is replaced by an empty table.</li>
+	<li>Every path needs at least one key. An empty path has nothing to write to and errors.</li>
+	<li>Values are decoded, so a table value must be a <code>{K = ..., V = ...}</code> envelope. Pass a plain <code>{1, 2, 3}</code> and you get an empty table.</li>
+	<li>Like <code>ApplySnapshot</code>, this checks nothing and replicates nothing.</li>
+</ul>
+
+<h2>The view proxy</h2>
+
+<p>
+	<code>GetTable</code> does not hand back your table. It hands back a proxy that stands
+	in front of it. That is how Pigeon sees every write without you having to call a
+	setter.
+</p>
+
+<div class="flow">
+	<p class="flow__label">One write</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">view.stats.speed = 24</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">check and copy</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">store it</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">queue patch {"stats", "speed"}</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">one packet at end of frame</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">client ApplyPatches</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">client sees 24</span>
+	</div>
+</div>
+
+<p>The proxy is a <code>newproxy</code> userdata with four metamethods on it.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Metamethod</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>__index</code></td>
+			<td>Reading a key. A plain value comes straight out. A table value comes back as another view of that inner table, built on demand and held weakly.</td>
+		</tr>
+		<tr>
+			<td><code>__newindex</code></td>
+			<td>Writing a key. The value is checked and deep copied first, then stored, then reported as a patch with the full path from the root.</td>
+		</tr>
+		<tr>
+			<td><code>__len</code></td>
+			<td><code>#view</code> is the length of the table behind it.</td>
+		</tr>
+		<tr>
+			<td><code>__iter</code></td>
+			<td><code>for k, v in view</code> walks the real table behind the proxy.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h3>Iterating gives you the raw value</h3>
+
+<p>
+	This is the sharp edge. <code>__iter</code> hands you what is actually stored, not a
+	view of it. So a nested table you get out of a loop is the real inner table, and
+	writing to it changes the server's copy without telling anyone.
+</p>
+
+<pre><code>local view = staged:GetTable()
+view.stats = { speed = 16 }
+
+-- Replicates. The path {"stats", "speed"} goes out.
+view.stats.speed = 24
+
+for key, value in view do
+	if key == "stats" then
+		-- Does not replicate. `value` is the raw table, not a view.
+		value.speed = 99
+	end
+end</code></pre>
+
+<p>
+	Reading in a loop is fine. When you want to write, index down from the view instead.
+</p>
+
+<h3>Appending to a list</h3>
+
+<p>
+	<code>table.insert</code> will not take the view, but <code>#</code> works, so the
+	long hand version does the job and replicates properly.
+</p>
+
+<pre><code>local view = staged:GetTable()
+view.items = {}
+
+local items = view.items
+items[#items + 1] = "sword"</code></pre>
+
+<h3>Other things the proxy does</h3>
+
+<ul>
+	<li>A write copies the value. After <code>view.stats = t</code>, changing <code>t</code> later does nothing to the staged table.</li>
+	<li>Writing <code>nil</code> deletes the key, and the deletion replicates like any other write.</li>
+	<li>A rejected write leaves nothing behind. The check runs before the store, so an error means the table is untouched.</li>
+	<li>Nested writes report the full path, so changing one field deep inside sends that field and not the whole table.</li>
+	<li>Child views are held weakly. One that nothing keeps a reference to is collected and rebuilt on the next read.</li>
+</ul>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A nested view is tied to the inner table it wrapped. If a patch or a snapshot
+		replaces that whole inner table, a nested view you are still holding points at the
+		old one and shows stale values. Read down from the root again after you expect a
+		change, rather than keeping <code>local stats = view.stats</code> around for a
+		long time. See <a href="../guide/known-issues.html">Known Issues</a>.
+	</p>
+</div>
+
+<h2>What you may store</h2>
+
+<p>
+	A staged table carries data, not objects. Every value has to be a plain Roblox value
+	type, or a table with no metatable holding more of the same. The rule is checked on
+	the starting contents and on every write.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Group</th><th>Types</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Basics</td>
+			<td><code>nil</code>, <code>boolean</code>, <code>number</code>, <code>string</code>, <code>buffer</code></td>
+		</tr>
+		<tr>
+			<td>Shape and position</td>
+			<td><code>CFrame</code>, <code>Ray</code>, <code>Rect</code>, <code>Region3</code>, <code>Region3int16</code>, <code>UDim</code>, <code>UDim2</code>, <code>Vector2</code>, <code>Vector2int16</code>, <code>Vector3</code>, <code>Vector3int16</code></td>
+		</tr>
+		<tr>
+			<td>Colour and look</td>
+			<td><code>BrickColor</code>, <code>Color3</code>, <code>ColorSequence</code>, <code>ColorSequenceKeypoint</code>, <code>Font</code>, <code>NumberRange</code>, <code>NumberSequence</code>, <code>NumberSequenceKeypoint</code>, <code>TweenInfo</code></td>
+		</tr>
+		<tr>
+			<td>Physics and queries</td>
+			<td><code>Axes</code>, <code>Faces</code>, <code>OverlapParams</code>, <code>PathWaypoint</code>, <code>PhysicalProperties</code>, <code>RaycastParams</code></td>
+		</tr>
+		<tr>
+			<td>Odds and ends</td>
+			<td><code>CatalogSearchParams</code>, <code>DateTime</code>, <code>EnumItem</code>, <code>Random</code></td>
+		</tr>
+		<tr>
+			<td>Tables</td>
+			<td>Any table with no metatable whose keys and values follow the same rules.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>Everything else is refused. In particular:</p>
+
+<ul>
+	<li><strong>Instances.</strong> An Instance is a reference, not a value, and the far side cannot resolve it.</li>
+	<li><strong>Tables with metatables.</strong> Class instances, OOP objects and proxies are all tables with metatables, and the behaviour on them cannot cross the wire.</li>
+	<li><strong>Functions and threads.</strong> Same reason.</li>
+	<li><strong>Any other userdata</strong>, including another staged table's view.</li>
+</ul>
+
+<h3>Keys</h3>
+
+<p>
+	Keys follow the same list, with one extra rule: a key may not be a table. Keys with
+	value semantics, such as strings, numbers, booleans and <code>EnumItem</code>, are
+	addressable again on the far side. A key that is userdata, such as a
+	<code>CFrame</code> or a <code>Color3</code>, survives the trip structurally, but Luau
+	looks those up by identity, so the rebuilt key will not match a freshly made one on
+	the other machine.
+</p>
+
+<h2>Write errors</h2>
+
+<p>
+	All five come from the same check, and all five are raised before anything is stored.
+	Each message names the path to the value that caused it, written as <code>root</code>
+	for the top level or <code>root.stats.health</code> further down.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Code</th><th>What triggers it</th><th>Example that raises it</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>ERR_STAGE_UNSUPPORTED</code></td>
+			<td>A value or key whose type is not on the allowed list. Instances and other userdata land here.</td>
+			<td><code>view.model = workspace.Part</code></td>
+		</tr>
+		<tr>
+			<td><code>ERR_STAGE_BEHAVIOUR</code></td>
+			<td>A function or a thread, used as a value or as a key.</td>
+			<td><code>view.onHit = function() end</code></td>
+		</tr>
+		<tr>
+			<td><code>ERR_STAGE_METATABLE</code></td>
+			<td>A table with a metatable, at any depth.</td>
+			<td><code>view.profile = setmetatable({}, Profile)</code></td>
+		</tr>
+		<tr>
+			<td><code>ERR_STAGE_CYCLE</code></td>
+			<td>A table that leads back to itself down the same branch.</td>
+			<td><code>local t = {}; t.self = t; view.t = t</code></td>
+		</tr>
+		<tr>
+			<td><code>ERR_STAGE_TABLE_KEY</code></td>
+			<td>A table used as a key.</td>
+			<td><code>view.lookup = { [{}] = true }</code></td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>The messages themselves read like this:</p>
+
+<pre><code>ERR_STAGE_UNSUPPORTED | Staged tables carry plain Roblox data only; got Instance at root.model.
+ERR_STAGE_BEHAVIOUR | Staged tables carry data, not behaviour; got function at root.onHit.
+ERR_STAGE_METATABLE | Staged tables carry plain Roblox data only; got a table with a metatable at root.profile.
+ERR_STAGE_CYCLE | Staged tables cannot contain cycles; root.t.self refers back into itself.
+ERR_STAGE_TABLE_KEY | Staged table keys must be values, not tables; got one at root.lookup.</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		These errors carry no script name or line number. That is deliberate, and it is
+		why the path is in the message. Read the path to find the value that upset it.
+	</p>
+</div>
+
+<h3>The same table twice is fine</h3>
+
+<p>
+	The cycle check only looks down the branch it is currently walking, so one table used
+	in two places is allowed. It arrives on the other side as two separate copies rather
+	than one shared table.
+</p>
+
+<pre><code>local shared = { level = 3 }
+
+-- Fine. Two copies land on the client.
+view.a = { left = shared, right = shared }
+
+-- Not fine. This branch leads back into itself.
+local loop = {}
+loop.self = loop
+view.b = loop</code></pre>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="../guide/staged-tables.html">Staged Tables</a> for how to use one in a game.</li>
+	<li><a href="carrier.html">Carrier</a> for <code>CaptureTable</code>, <code>ForceTable</code>, <code>ReleaseTable</code> and <code>RequestTable</code>.</li>
+	<li><a href="pigeon.html">Pigeon</a> for <code>Pigeon.StagedTable</code>.</li>
+	<li><a href="types.html">Types</a> for the Luau types.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

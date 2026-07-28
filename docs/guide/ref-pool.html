@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Ref Pool | Pigeon</title>
+<meta name="description" content="How Pigeon fits any number of channels into a handful of RemoteEvents under ReplicatedStorage.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>The Ref Pool</h1>
+
+<p class="lead">
+	Pigeon does not make a RemoteEvent per channel. It keeps a small pool of them and
+	hashes each transformer onto one. This page explains what that pool looks like, how
+	big it gets, and how both machines agree on it.
+</p>
+
+<p>
+	You never have to touch any of this to use Pigeon. Read it when you want to know
+	what those Instances in <code>ReplicatedStorage</code> are, or when you are counting
+	remotes for a performance budget.
+</p>
+
+<h2>What ends up in ReplicatedStorage</h2>
+
+<p>
+	One folder, called <code>PigeonRefs</code>. Inside it are numbered RemoteEvents.
+	Pigeon calls each one a <em>ref</em>, and each ref serves a <em>bucket</em>, which is
+	just its slot number in the pool.
+</p>
+
+<pre><code>ReplicatedStorage
+└── PigeonRefs            -- attribute: RefCount = 3
+    ├── PigeonRef_1       -- RemoteEvent
+    ├── PigeonRefU_1      -- UnreliableRemoteEvent
+    ├── PigeonRef_2       -- RemoteEvent
+    ├── PigeonRefU_2      -- UnreliableRemoteEvent
+    ├── PigeonRef_3       -- RemoteEvent
+    └── PigeonRefU_3      -- UnreliableRemoteEvent</code></pre>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Name</th><th>Class</th><th>What it carries</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>PigeonRefs</code></td><td>Folder</td><td>Holds the pool. Created by the server under <code>ReplicatedStorage</code>.</td></tr>
+		<tr><td><code>PigeonRef_N</code></td><td>RemoteEvent</td><td>The normal lane for bucket <code>N</code>. Everything travels here by default.</td></tr>
+		<tr><td><code>PigeonRefU_N</code></td><td>UnreliableRemoteEvent</td><td>The lossy twin for bucket <code>N</code>. Only used by unreliable sends.</td></tr>
+		<tr><td><code>RefCount</code></td><td>Attribute on the folder</td><td>How many buckets the pool currently has. The server writes it, clients read it.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>Buckets are numbered from 1. The count never drops below 1, so bucket 1 is always in the pool.</p>
+
+<h2>How many remotes you get</h2>
+
+<p>
+	The pool is sized from the number of transformers, not the number of channels. One
+	ref per 16 transformers, never fewer than 1, never more than 32.
+</p>
+
+<pre><code>-- The rule Pigeon applies internally, written out so you can follow it.
+local function refCountFor(transformerCount: number): number
+	return math.clamp(math.ceil(transformerCount / 16), 1, 32)
+end</code></pre>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Transformers</th><th>Reliable remotes</th><th>Why</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>1</td><td>1</td><td>The floor. You always get at least one.</td></tr>
+		<tr><td>16</td><td>1</td><td>16 / 16 is exactly 1.</td></tr>
+		<tr><td>17</td><td>2</td><td>One over the line, so it rounds up.</td></tr>
+		<tr><td>100</td><td>7</td><td>100 / 16 is 6.25, rounded up.</td></tr>
+		<tr><td>512</td><td>32</td><td>512 / 16 is exactly 32, which is also the ceiling.</td></tr>
+		<tr><td>1000</td><td>32</td><td>1000 / 16 is 62.5, but the pool stops at 32 however many you make.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	By default one channel means one carrier means one transformer, so in practice you
+	can read that first column as "channels". If you share a transformer between several
+	carriers it only counts once. See <a href="transformers.html">Transformers</a>.
+</p>
+
+<h2>200 channels still fit in 13 remotes</h2>
+
+<p>
+	That is the whole point of the pool. 200 transformers divided by 16 is 12.5, rounded
+	up to 13. With one RemoteEvent per feature you would have 200 Instances to create,
+	name, parent and wait for. Here you have 13 buckets, and you never named any of
+	them.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Each bucket also has an unreliable twin, so 13 buckets is 26 Instances in the
+		folder. The server makes both up front. Still 26 instead of 200, and a twin
+		carries nothing until something sends unreliably.
+	</p>
+</div>
+
+<h2>Which bucket a transformer lands on</h2>
+
+<p>
+	The transformer's uuid is hashed, and the hash is folded into the pool size.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Picking a remote</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">transformer uuid</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">FNV-1a hash</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">modulo RefCount</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">PigeonRef_N</span>
+	</div>
+</div>
+
+<p>
+	FNV-1a is a small, fast hash function that turns a string into a number. Pigeon uses
+	the 32-bit version. It is not for security, it is for spreading strings evenly and
+	always giving the same answer for the same string.
+</p>
+
+<pre><code>-- The hash Pigeon uses internally, written out so you can follow it.
+local function hashString(s: string): number
+	local hash = 2166136261
+	for i = 1, #s do
+		hash = bit32.bxor(hash, string.byte(s, i))
+		hash = (hash * 16777619) % 4294967296
+	end
+	return hash
+end
+
+local function bucketOf(uuid: string, refCount: number): number
+	return (hashString(uuid) % refCount) + 1
+end
+
+print(bucketOf("Shop", 3)) --> the same bucket every run, on both machines</code></pre>
+
+<p>
+	Two things follow from this. The same uuid always lands on the same bucket for a
+	given pool size, so a channel does not drift from remote to remote while you play.
+	And a carrier called <code>"Shop"</code> on the server and one called
+	<code>"Shop"</code> on the client hash the same string, so they meet on the same
+	remote without ever being told about each other.
+</p>
+
+<h2>Why the count is published as an attribute</h2>
+
+<p>
+	The bucket depends on the pool size, so both machines have to use the same number.
+	They cannot each work it out locally, because they do not know the same things. A
+	client that made three transformers of its own would compute a pool of 1, while a
+	server with 100 transformers is using 7.
+</p>
+
+<p>
+	So the server is the authority. It writes <code>RefCount</code> onto the
+	<code>PigeonRefs</code> folder, and clients read that attribute instead of counting
+	anything themselves.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Machine</th><th>What it does with the count</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Server</td><td>Works it out from its own transformer count, then writes it to the <code>RefCount</code> attribute.</td></tr>
+		<tr><td>Client</td><td>Reads that attribute. Falls back to 1 while it has not replicated yet.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	The fallback of 1 is the safe answer, because bucket 1 is always in the pool. Without
+	a shared count a client could work out that it needs <code>PigeonRef_9</code> when the
+	server only ever made seven, and the wait for that Instance would never finish.
+</p>
+
+<h3>Reading the count yourself</h3>
+
+<p>
+	One function answers on both machines, so you do not have to care which side you are
+	on.
+</p>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.Network.GetRefCount() -> number</code></pre>
+</div>
+
+<p>
+	Takes no parameters. <strong>Returns</strong> the pool size this machine is bucketing
+	against: the computed count on the server, the published attribute on the client, and
+	1 on a client that has not received the attribute yet.
+</p>
+
+<pre><code>print(Pigeon.Network.GetRefCount()) --> 3</code></pre>
+
+<h2>The reliable and unreliable twin</h2>
+
+<p>
+	Every bucket has two remotes: a <code>RemoteEvent</code> and an
+	<code>UnreliableRemoteEvent</code> with the same number. They are two lanes for the
+	same bucket.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Traffic</th><th>Lane</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Fire and forget sends on a normal carrier</td><td>Reliable</td></tr>
+		<tr><td>Fire and forget sends on an unreliable carrier</td><td>Unreliable</td></tr>
+		<tr><td>Requests</td><td>Always reliable</td></tr>
+		<tr><td>Replies to requests</td><td>Always reliable</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Requests and replies never take the lossy lane, because a dropped reply would leave
+	the caller waiting for nothing until it times out. See
+	<a href="unreliable.html">Unreliable Sending</a> for when the lossy lane is a good
+	trade.
+</p>
+
+<p>
+	The two twins replicate separately, so a client can hold one and not the other. When
+	only the reliable ref has arrived, an unreliable send takes it rather than waiting.
+	Going the other way, the server drops an unreliable packet outright if the client has
+	not opened that channel yet, because a packet that may be lost in transit has no
+	business being replayed later.
+</p>
+
+<h2>The server creates, the client discovers</h2>
+
+<p>
+	Only the server ever makes a ref. When a transformer is created on the server,
+	Pigeon works out the new pool size, creates every ref up to it, republishes
+	<code>RefCount</code>, and resolves the ref for that transformer.
+</p>
+
+<p>
+	The client does none of that. Creating a transformer on the client does not make an
+	Instance. Instead, when Pigeon loads, the client waits for the
+	<code>PigeonRefs</code> folder, binds every ref already in it, and then listens for
+	<code>ChildAdded</code> so it picks up any the server makes later. Binding a ref is
+	just connecting <code>OnClientEvent</code> so packets arriving on it get routed.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th></th><th>Server</th><th>Client</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Creates the folder</td><td>Yes</td><td>No, it waits for it</td></tr>
+		<tr><td>Creates refs</td><td>Yes, eagerly</td><td>Never</td></tr>
+		<tr><td>Writes <code>RefCount</code></td><td>Yes</td><td>No, it reads it</td></tr>
+		<tr><td>Binds refs</td><td>On creation</td><td>Lazily, as they show up</td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Because the client only discovers refs, a very early send can happen before the
+		ref it needs has replicated. Nothing yields and nothing is lost. The packet is
+		held, and the moment the ref binds Pigeon replays everything it was holding.
+	</p>
+	<p>
+		The replay is ordered. Every held <code>Init</code> goes out first, then the
+		traffic that queued behind it, in the order you sent it. So a carrier built on
+		the first frame opens exactly as it would have had the pool been there all
+		along, and none of it blocks the code that called it.
+	</p>
+</div>
+
+<p>
+	Binding a ref is not the same as being ready for traffic. The server still holds
+	anything addressed to a channel the client has not opened yet. That is a separate
+	mechanism, covered in <a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<h2>The pool can shrink</h2>
+
+<p>
+	Destroying a transformer lowers the count the server sizes from, and it republishes
+	<code>RefCount</code> straight away. If that pushes the pool down a size, every uuid
+	is folded into a smaller number and some channels move to a different bucket.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Both sides read the count fresh every time they pick a bucket, and the attribute
+		takes a moment to replicate, so for a brief window the two machines can disagree
+		about the pool size. Packets still arrive: the receiving side is bound to every
+		ref it has seen, and routing is by channel name rather than by which remote the
+		packet came in on. Nothing is lost, it just goes out on a different lane for a
+		moment.
+	</p>
+</div>
+
+<p>
+	Refs that are already made are never deleted. A pool that grew to 7 and then shrank
+	to 5 still has seven RemoteEvents in the folder. The last two are simply not chosen
+	any more until the count climbs back.
+</p>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="transformers.html">Transformers</a> for the object whose uuid drives all of this.</li>
+	<li><a href="startup.html">Startup and Buffering</a> for what happens before a client is ready.</li>
+	<li><a href="unreliable.html">Unreliable Sending</a> for the twin remotes.</li>
+	<li><a href="../api/network.html">Network API</a> for the low level transport.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

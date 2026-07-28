@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Startup and Buffering | Pigeon</title>
+<meta name="description" content="Why the client calls Init, what the server holds back until then, and how long it holds it.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Startup and Buffering</h1>
+
+<p class="lead">
+	A game starts sending before every client is ready to listen. Pigeon holds those
+	messages instead of losing them, and lets them go when the client says it is ready.
+	That is all <code>Init</code> does.
+</p>
+
+<h2>The problem</h2>
+
+<p>
+	Server scripts and local scripts do not start at the same moment. The server can
+	load, decide the shop stock changed and broadcast it, all before a joining client's
+	LocalScript has run a single line.
+</p>
+
+<p>
+	With a plain RemoteEvent that message is gone. It fired, nothing was connected, and
+	nobody will ever hear about it. You end up writing a "tell me the current state"
+	round trip for every system just to paper over the first second of the session.
+</p>
+
+<h2>Init <span class="badge badge--client">Client</span></h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Init() -> PigeonCarrier</code></pre>
+</div>
+
+<p>
+	The client registers its handlers first, then calls <code>Init</code> once.
+	<code>Init</code> tells the server "I am ready on this channel", and the server
+	sends everything it has been holding for that client on that channel, oldest first.
+	It takes no parameters and it never yields.
+</p>
+
+<p>
+	<strong>Returns</strong> the same carrier, so you can chain from it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", updateShopUi)
+shop:On("Sold", playSoldSound)
+
+-- Handlers are in place. Let the backlog through.
+shop:Init()</code></pre>
+</div>
+
+<div class="flow">
+	<p class="flow__label">A message that arrives too early</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:Broadcast("StockChanged", stock)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">is this client ready on "Shop"?</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">no, hold it in the "Shop" queue</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:On(...) then shop:Init()</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">server releases the queue, oldest first</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">your handlers run</span>
+	</div>
+</div>
+
+<p>
+	Once a client is ready on a channel it stays ready for the rest of its session.
+	Later broadcasts go straight out with no queue involved.
+</p>
+
+<h2>The rules of Init</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Rule</th><th>What it means for you</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Client only.</td>
+			<td>On the server it does nothing at all. It does not error, so shared code can call it without checking which machine it is on.</td>
+		</tr>
+		<tr>
+			<td>It returns the carrier.</td>
+			<td>You can chain it, or ignore the return value.</td>
+		</tr>
+		<tr>
+			<td>Calling it twice is safe.</td>
+			<td>The second call does nothing. There is no second flush and no warning.</td>
+		</tr>
+		<tr>
+			<td>It does not yield.</td>
+			<td>It returns immediately, even on the first frame, before the remotes have replicated in. If there is no remote to send on yet the readiness packet is held and goes out ahead of everything else the carrier queued behind it. See <a href="ref-pool.html">The Ref Pool</a>.</td>
+		</tr>
+		<tr>
+			<td>It is per channel.</td>
+			<td>Readying "Shop" releases the "Shop" backlog and nothing else.</td>
+		</tr>
+		<tr>
+			<td>It only opens the inbound direction.</td>
+			<td>The client can <code>Emit</code> and <code>Call</code> from its first frame with no <code>Init</code> at all.</td>
+		</tr>
+		<tr>
+			<td>A dropped carrier ignores it.</td>
+			<td>No error. See <a href="cleanup.html">Cleanup</a>.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>Chaining works because <code>Init</code> hands the carrier back:</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+shop:On("StockChanged", updateShopUi)
+
+local same = shop:Init()
+print(same == shop) --> true</code></pre>
+</div>
+
+<h2>Readiness is per channel</h2>
+
+<p>
+	The queue is kept per client, per channel, and a channel is just a carrier's name.
+	Bringing one channel up says nothing about any other.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+local quests = Pigeon.new("Quests")
+
+shop:On("StockChanged", updateShopUi)
+shop:Init()          -- Shop's backlog arrives now
+
+-- Quests is still queued on the server. Nothing has been lost.
+task.wait(5)
+
+quests:On("Updated", updateQuestUi)
+quests:Init()        -- Quests' backlog arrives now</code></pre>
+</div>
+
+<p>
+	This is why a system that loads late does not lose its opening messages just because
+	another system was quicker.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Readiness is keyed by the channel name, not by the carrier object. If you build
+		two carriers with the same name on one client, calling <code>Init</code> on
+		either one opens that name for both of them.
+	</p>
+</div>
+
+<h2>What the queue will and will not hold</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Limit</th><th>Behaviour</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>64 messages</td>
+			<td>Per client, per channel. When a 65th arrives the oldest one is dropped to make room.</td>
+		</tr>
+		<tr>
+			<td>30 seconds</td>
+			<td>A held message older than this is swept away, whether the queue is full or not.</td>
+		</tr>
+		<tr>
+			<td>The player leaves</td>
+			<td>Everything held for them is dropped at once, and nothing can queue for them again.</td>
+		</tr>
+		<tr>
+			<td>Unreliable sends</td>
+			<td>Never queued. A message that was allowed to go missing in transit has no business turning up a minute late, so it is simply dropped if the client is not ready. See <a href="unreliable.html">Unreliable Sending</a>.</td>
+		</tr>
+		<tr>
+			<td>Replies to a request</td>
+			<td>Never queued. The far side is already yielded on the answer, so holding it would strand that thread until its timeout.</td>
+		</tr>
+		<tr>
+			<td>Server to client requests</td>
+			<td>Queued like any other message. A <code>CallTo</code> to a client that has not called <code>Init</code> waits in the queue, and the server thread waits with it. Unless that client opens the channel inside the call's timeout, the call comes back <code>nil</code>. See <a href="requests.html">Requests and Replies</a>.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A client that never calls <code>Init</code> hears nothing from the server on that
+		channel. Its own <code>Emit</code> and <code>Call</code> keep working perfectly,
+		which makes this a quiet bug: half the channel works. If a broadcast is not
+		showing up, check that <code>Init</code> was called on that exact channel name.
+	</p>
+</div>
+
+<h2>Orphan replay: the last few frames</h2>
+
+<p>
+	<code>Init</code> covers the gap before the client is ready. There is a second,
+	smaller gap it cannot cover: a message that arrives on a ready channel a moment
+	before the handler for that particular event exists.
+</p>
+
+<p>
+	Pigeon holds those too. A message with no listener for its event is kept for 10
+	seconds and replayed to the first listener that registers for it.
+</p>
+
+<div class="flow">
+	<p class="flow__label">A message that arrives before its handler</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">"Sold" arrives</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">nobody is listening for "Sold"</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">held, up to 10 seconds</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:On("Sold", fn)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">held messages replay into fn, in order</span>
+	</div>
+</div>
+
+<p>Worth knowing about it:</p>
+
+<ul>
+	<li>It works on both machines. A client <code>Emit</code> that beats the server's <code>On</code> is held the same way.</li>
+	<li>It is per channel and per event name, and holds up to 64 of them. The oldest goes first when that fills.</li>
+	<li>The held messages are replayed once, to the first listener only. A second listener registered afterwards does not see them.</li>
+	<li>10 seconds, then they are swept.</li>
+</ul>
+
+<p>
+	Treat this as a safety net, not a plan. It exists because the moment a client
+	declares itself ready the server starts sending, and that can land a frame or two
+	before your game code has finished wiring up.
+</p>
+
+<h2>The rule</h2>
+
+<p>
+	Register every <code>On</code> you care about, then call <code>Init</code> once.
+	That is the whole thing.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")
+
+-- 1. every handler first
+shop:On("StockChanged", updateShopUi)
+shop:On("Sold", playSoldSound)
+shop:On("Restocked", flashRestockBadge)
+
+-- 2. then open the channel, once
+shop:Init()
+
+-- 3. now use it normally
+print(shop:Call("Buy", "sword"))</code></pre>
+</div>
+
+<p>
+	The server has nothing to do. It never calls <code>Init</code>, and it does not need
+	to know which clients are ready. It just sends, and Pigeon decides whether that goes
+	out now or waits.
+</p>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="sending.html">Sending and Receiving</a> for the messages being queued in the first place.</li>
+	<li><a href="requests.html">Requests and Replies</a> for the one kind of traffic that never waits.</li>
+	<li><a href="../api/carrier.html">Carrier API</a> for every other method on a carrier.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

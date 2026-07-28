@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting Started | Pigeon</title>
+<meta name="description" content="Build a working Points channel from nothing, one step at a time.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Getting Started</h1>
+
+<p class="lead">
+	We are going to build a channel called <code>Points</code>. The server awards
+	points, the client hears about it, and the client can ask for its total. Seven
+	small steps, all of it runnable.
+</p>
+
+<p>
+	This assumes Pigeon is already in <code>ReplicatedStorage</code>. If it is not,
+	do <a href="installation.html">Installation</a> first.
+</p>
+
+<p>You need two scripts:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Script</th><th>Kind</th><th>Where it goes</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Points</code></td><td>Script</td><td><code>ServerScriptService</code></td></tr>
+		<tr><td><code>PointsClient</code></td><td>LocalScript</td><td><code>StarterPlayer &rsaquo; StarterPlayerScripts</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>Step 1: Require Pigeon on both sides</h2>
+
+<p>Same module, both machines.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage:WaitForChild("Pigeon"))</code></pre>
+</div>
+
+<p>
+	The client waits, because a LocalScript can start running before the Pigeon
+	folder has replicated to it.
+</p>
+
+<h2>Step 2: Make the carrier, with the same name</h2>
+
+<p>
+	A carrier is a named channel. The name is the only thing the two machines have to
+	agree on. Get it right and they are talking. Get it wrong and both sides work
+	perfectly, in silence, forever.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local points = Pigeon.new("Points")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local points = Pigeon.new("Points")</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Called with just a name, <code>Pigeon.new</code> is a lookup. The carrier is
+		built once and every later call anywhere in your code hands back the same
+		object, so you do not have to pass it around. Pass an options table and you get
+		a fresh uncached carrier instead, even if the table is empty.
+	</p>
+</div>
+
+<h2>Step 3: Add a listener on the client</h2>
+
+<p>
+	<code>On</code> takes an event name and a function. The event name is yours to
+	pick. It lives inside this channel, so <code>"Changed"</code> here has nothing to
+	do with <code>"Changed"</code> on any other channel.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local points = Pigeon.new("Points")
+
+points:On("Changed", function(total)
+	print("you now have", total, "points")
+end)</code></pre>
+</div>
+
+<p>
+	The handler gets exactly what the server sent. No player argument, because on the
+	client there is only ever one sender. It will not fire yet. Step 4 opens the
+	channel.
+</p>
+
+<h2>Step 4: Call Init</h2>
+
+<p>
+	<code>Init</code> tells the server this client is ready to receive on this
+	channel. Call it once, after your handlers are registered.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local points = Pigeon.new("Points")
+
+points:On("Changed", function(total)
+	print("you now have", total, "points")
+end)
+
+-- Handlers are in place. Open the channel.
+points:Init()</code></pre>
+</div>
+
+<p>
+	Until <code>Init</code> lands, the server holds everything it sends you on this
+	channel: up to 64 packets, for 30 seconds. Then the backlog arrives in the order
+	it was held. That is why registering handlers first and calling
+	<code>Init</code> last is the right order, and why you miss nothing by doing it.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		<code>Init</code> only opens the inbound direction, and only for this channel.
+		Sending from the client never needs it, and other channels stay queued until
+		they call their own. On the server <code>Init</code> does nothing at all, so
+		shared code can call it without checking which machine it is on.
+	</p>
+</div>
+
+<h2>Step 5: Broadcast from the server</h2>
+
+<p>
+	Now the server side. It keeps a total per player and sends the new total to that
+	player whenever it changes.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local points = Pigeon.new("Points")
+
+local totals: { [Player]: number } = {}
+
+local function award(player: Player, amount: number)
+	totals[player] = (totals[player] or 0) + amount
+	points:BroadcastTo({ player }, "Changed", totals[player])
+end
+
+Players.PlayerAdded:Connect(function(player)
+	award(player, 10)  -- welcome bonus
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	totals[player] = nil
+end)</code></pre>
+</div>
+
+<p>
+	Press play. The welcome bonus fires on <code>PlayerAdded</code>, which happens
+	well before your LocalScript has called <code>Init</code>, and you still see
+	<code>you now have 10 points</code> in the output. That is the buffer at work.
+</p>
+
+<p>There are three ways to send from the server. Pick by who you mean.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>Who gets it</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>points:BroadcastTo({ player }, "Changed", 10)</code></td><td>The players you list.</td></tr>
+		<tr><td><code>points:Broadcast("Changed", 10)</code></td><td>Everyone.</td></tr>
+		<tr><td><code>points:BroadcastExcept({ player }, "Changed", 10)</code></td><td>Everyone but the players you list.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>Step 6: Add a Call that returns a value</h2>
+
+<p>
+	<code>Emit</code> and <code>Broadcast</code> are fire and forget. When the client
+	needs an answer it uses <code>Call</code>, and the server's listener answers it by
+	returning a value. There is no separate object and no second event to wire up.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>points:On("GetTotal", function(player)
+	return totals[player] or 0
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local total = points:Call("GetTotal")
+print("starting total:", total)</code></pre>
+</div>
+
+<p>
+	<code>Call</code> yields the thread it is on until the server's handler returns.
+	Whatever that handler returns is what you get back, and you can return more than
+	one value.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>points:On("Spend", function(player, amount)
+	local have = totals[player] or 0
+	if have &lt; amount then
+		return false, "not enough points"
+	end
+	totals[player] = have - amount
+	points:BroadcastTo({ player }, "Changed", totals[player])
+	return true
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ok, reason = points:Call("Spend", 25)
+if not ok then
+	print("cannot spend:", reason)
+end</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A <code>Call</code> gives up after 10 seconds by default and returns
+		<code>nil</code>. It returns <code>nil</code> the same way if the carrier has
+		been dropped, so check the result before you use it. To change the wait, pass
+		<code>Pigeon.new("Points", { Timeout = 3 })</code>. Remember that any options
+		table gives you an uncached carrier, so build it once and share that one.
+	</p>
+</div>
+
+<h2>Step 7: Add a second channel</h2>
+
+<p>
+	Channels do not leak into each other. Here is a second one that uses the very
+	same event name.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- Same event name as the Points channel. Different channel, so no overlap.
+shop:Broadcast("Changed", { sword = 3, shield = 1 })</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Changed", function(stock)
+	print("shop stock changed, swords left:", stock.sword)
+end)
+
+shop:Init()</code></pre>
+</div>
+
+<p>
+	The <code>Points</code> handler never fires for shop stock and the
+	<code>Shop</code> handler never fires for points. The channel name travels with
+	every message, joined to the event name, so what actually goes on the wire for
+	these two is <code>Points\0Changed</code> and <code>Shop\0Changed</code>. They are
+	different names, so they never meet.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Two channels, one event name</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">points:Broadcast("Changed", 10)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">Points\0Changed</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">points:On("Changed")</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">shop:Broadcast("Changed", stock)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">Shop\0Changed</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">shop:On("Changed")</span>
+	</div>
+</div>
+
+<p>
+	Each channel also has its own <code>Init</code> and its own queue. Calling
+	<code>points:Init()</code> releases points traffic only. Shop traffic keeps
+	waiting until <code>shop:Init()</code>.
+</p>
+
+<h2>The finished scripts</h2>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local points = Pigeon.new("Points")
+
+local totals: { [Player]: number } = {}
+
+local function award(player: Player, amount: number)
+	totals[player] = (totals[player] or 0) + amount
+	points:BroadcastTo({ player }, "Changed", totals[player])
+end
+
+points:On("GetTotal", function(player)
+	return totals[player] or 0
+end)
+
+points:On("Spend", function(player, amount)
+	local have = totals[player] or 0
+	if have &lt; amount then
+		return false, "not enough points"
+	end
+	totals[player] = have - amount
+	points:BroadcastTo({ player }, "Changed", totals[player])
+	return true
+end)
+
+Players.PlayerAdded:Connect(function(player)
+	award(player, 10)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	totals[player] = nil
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage:WaitForChild("Pigeon"))
+
+local points = Pigeon.new("Points")
+
+points:On("Changed", function(total)
+	print("you now have", total, "points")
+end)
+
+points:Init()
+
+print("starting total:", points:Call("GetTotal"))
+
+local ok, reason = points:Call("Spend", 25)
+if not ok then
+	print("cannot spend:", reason)
+end</code></pre>
+</div>
+
+<h2>Common mistakes</h2>
+
+<h3>Forgetting Init</h3>
+
+<p>
+	The most common one by far. Your listeners are correct, the server is sending,
+	and nothing arrives. Without <code>Init</code> the server keeps holding that
+	channel's messages, and after 30 seconds it starts dropping them.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- Nothing will ever reach this handler.
+local points = Pigeon.new("Points")
+points:On("Changed", print)
+
+-- Add this.
+points:Init()</code></pre>
+</div>
+
+<p>
+	Sending still works without it. A client can <code>Emit</code> and
+	<code>Call</code> from the very first frame. It is only the inbound direction
+	that waits.
+</p>
+
+<h3>A different name on each side</h3>
+
+<p>
+	The name is the channel, and it is compared exactly. Case counts. Spaces count.
+	Neither side errors, so this looks like a bug in your handler.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local points = Pigeon.new("Points")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local points = Pigeon.new("points")  -- lowercase p, a completely separate channel</code></pre>
+</div>
+
+<p>
+	Put the name in one shared module and require it from both sides if you keep
+	tripping on this.
+</p>
+
+<h3>Expecting the player argument on the client</h3>
+
+<p>
+	Server handlers get the sending player first. Client handlers do not. Copying a
+	handler from one side to the other and forgetting to change the arguments shifts
+	everything by one.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>points:On("Spend", function(player, amount)
+	--                    ^ the sender
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- Wrong: total lands in `player`, and `total` is nil.
+points:On("Changed", function(player, total) end)
+
+-- Right.
+points:On("Changed", function(total) end)</code></pre>
+</div>
+
+<h3>Using a reserved event name</h3>
+
+<p>
+	Event names starting with <code>__pigeon_</code> belong to Pigeon. It runs its
+	own ping, handshake and staged table traffic over those names on your channel.
+</p>
+
+<pre><code>-- Do not do this.
+points:On("__pigeon_ping", function() end)</code></pre>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Nothing stops you registering one, which is what makes it dangerous. Your
+		handler fires on Pigeon's own protocol packets, and because a handler's return
+		value answers a request, whatever you return can become Pigeon's answer to its
+		own internal call. Stay off the <code>__pigeon_</code> prefix and there is
+		nothing to think about.
+	</p>
+</div>
+
+<h2>Next</h2>
+
+<ul>
+	<li><a href="carriers.html">Carriers</a> for everything a carrier can do.</li>
+	<li><a href="sending.html">Sending and Receiving</a> for the send methods in full.</li>
+	<li><a href="requests.html">Requests and Replies</a> for <code>Call</code>, <code>CallTo</code> and timeouts.</li>
+	<li><a href="startup.html">Startup and Buffering</a> for what <code>Init</code> is really doing.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handshakes | Pigeon</title>
+<meta name="description" content="A handshake locks a carrier so only the clients your guard approves can send on it or hear it, and Revoke throws one back off.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Handshakes</h1>
+
+<p class="lead">
+	A handshake locks a channel. You install a guard on the server, and until that guard
+	says yes to a client, the client cannot send on the channel and cannot hear anything
+	on it. That is what makes a moderator only channel safe to shout on. When somebody
+	should not be there any more, <a href="#revoke"><code>Revoke</code></a> puts them back
+	outside without waiting for them to ask again.
+</p>
+
+<h2>The model</h2>
+
+<p>
+	A guard is a function you give to <code>UseHandshake</code>. The moment you install
+	one, the channel is shut to <em>everybody</em>. Nobody is grandfathered in.
+</p>
+
+<p>
+	A client gets in by calling <code>Handshake</code>. That runs your guard on the
+	server. If it returns <code>true</code>, that client is marked approved and the
+	channel opens for them. Until then they are shut out in both directions:
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What is tried</th><th>What happens to a client that is not approved</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Client <code>Emit</code></td>
+			<td>The packet reaches the server and is dropped before any listener or incoming middleware runs.</td>
+		</tr>
+		<tr>
+			<td>Client <code>Call</code></td>
+			<td>Dropped the same way. No reply is sent, so the call waits out the timeout and returns <code>nil</code>.</td>
+		</tr>
+		<tr>
+			<td>Server <code>Broadcast</code></td>
+			<td>They are filtered out of the recipient list. A broadcast to everyone reaches only the approved.</td>
+		</tr>
+		<tr>
+			<td>Server <code>BroadcastTo</code> / <code>BroadcastExcept</code></td>
+			<td>Same filter. Naming them explicitly does not get past it.</td>
+		</tr>
+		<tr>
+			<td>Server <code>SendToRoom</code></td>
+			<td>Same filter, even if they are in the <a href="rooms.html">room</a>.</td>
+		</tr>
+		<tr>
+			<td>Server <code>CallTo</code></td>
+			<td>Returns <code>nil</code> straight away without sending anything.</td>
+		</tr>
+		<tr>
+			<td>Client <code>RequestTable</code></td>
+			<td>The request is dropped, so it times out and then errors with <code>ERR_CAPTURE_DENIED</code>.</td>
+		</tr>
+		<tr>
+			<td>Client <code>Ping</code></td>
+			<td>No reply comes back, so it waits the full timeout and reports that as the latency.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	The one thing that always gets through is the handshake itself. It travels on a
+	reserved event called <code>__pigeon_handshake</code>, which the guard check skips.
+	That is how anyone ever gets in.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Every reserved name starts with <code>__pigeon_</code>. Do not use that prefix
+		for your own events.
+	</p>
+</div>
+
+<p>
+	The server can take an approval back at any time with <a href="#revoke"><code>Revoke</code></a>.
+	It clears that client's mark on the spot, so they drop back to every row in the table
+	above without waiting to handshake again.
+</p>
+
+<h2>One handshake, step by step</h2>
+
+<div class="flow">
+	<p class="flow__label">Client asks to be let in</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">mods:Handshake(token)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">__pigeon_handshake, always let through</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">your guard runs with (player, token)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">it returns true</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">the server marks that player approved</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">Handshake returns true</span>
+	</div>
+</div>
+
+<h2>The methods</h2>
+
+<h3>UseHandshake <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:UseHandshake(Callback: (player: Player, ...any) -> boolean) -> ()</code></pre>
+</div>
+
+<p>
+	Installs the guard and closes the channel. The guard is handed the player and
+	whatever they passed to <code>Handshake</code>. It must return exactly
+	<code>true</code> to admit them. Anything else, including a truthy value that is not
+	<code>true</code>, is a refusal.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Callback</code></td><td><code>(player: Player, ...any) -> boolean</code></td><td>The guard. Receives the player, then whatever that client passed to <code>Handshake</code>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player) and token == tokenFor(player)
+end)</code></pre>
+</div>
+
+<p>
+	Calling this on the client errors with <code>ERR_NOT_SERVER</code>.
+</p>
+
+<h3>Handshake <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Handshake(...: any) -> boolean</code></pre>
+</div>
+
+<p>
+	Sends whatever you pass to the server's guard and waits for the answer.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>Whatever the guard needs to judge this client. Forwarded to it after the player.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> a <code>boolean</code>. <code>true</code> means you may now
+	use the channel.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+if mods:Handshake(myToken) then
+	mods:Emit("Kick", targetName)
+else
+	print("not allowed on this channel")
+end</code></pre>
+</div>
+
+<p>
+	A carrier with no guard on the server admits everybody, so this returns
+	<code>true</code>. That means client code can call it without knowing whether the
+	channel is locked.
+</p>
+
+<p>
+	It returns <code>false</code> in three cases: the guard refused, the carrier has been
+	<a href="cleanup.html">dropped</a> or its
+	<a href="transformers.html">transformer</a> destroyed, or no reply arrived before
+	the timeout. The last one is worth remembering. If the reply is late, you see
+	<code>false</code> while the server has you marked approved. Try again if that
+	matters.
+</p>
+
+<p>
+	Calling this on the server errors with <code>ERR_NOT_CLIENT</code>.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		You do not need <code>Init</code> first. Replies are never queued, so a handshake
+		works from the start. You still want <code>Init</code> before any broadcast on
+		the channel can reach you. See <a href="startup.html">Startup and Buffering</a>.
+	</p>
+</div>
+
+<h3>Approved <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Approved(Targets: {Player}?) -> {Player}</code></pre>
+</div>
+
+<p>
+	Narrows a list of players down to the ones this carrier will talk to. Pass nothing
+	to start from every player in the game.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Targets</code></td><td><code>{Player}?</code></td><td>The players to filter. Left out, it starts from every player in the game.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> a <code>{Player}</code> holding the approved subset. With no
+	guard installed it is the list you passed in, handed straight back.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local online = mods:Approved()
+print(#online .. " moderators are on")
+
+-- Only the approved half of this party.
+local some = mods:Approved(partyMembers)</code></pre>
+</div>
+
+<p>
+	You rarely need it, because every send already runs this filter. It is useful for
+	counting, or for skipping expensive work when nobody is listening.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		This is the one method here that does not error on the client. A client never
+		holds a guard, so it just hands back every player it can see. Treat it as server
+		only.
+	</p>
+</div>
+
+<h3>Revoke <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Revoke(Targets: {Player} | Player) -> number</code></pre>
+</div>
+
+<p>
+	Throws one player or a list of them off the channel now. It clears their approval and
+	makes them let go of every staged table they were mirroring from this carrier. You do
+	not have to wait for them to handshake again, and they are not asked.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Targets</code></td><td><code>{Player} | Player</code></td><td>One player or a list of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> a <code>number</code>: how many of the players you named were
+	actually admitted. Somebody who never handshaked, or who you revoked a moment ago, is
+	not counted. With no guard installed nobody is ever marked admitted, so it is always
+	<code>0</code>.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>mods:Revoke(player)              -- one player
+mods:Revoke({ a, b, c })         -- or several
+
+local count = mods:Revoke(demoted)
+print(count .. " of them were on the channel")</code></pre>
+</div>
+
+<p>
+	Calling this on the client errors with <code>ERR_NOT_SERVER</code>. On a
+	<a href="cleanup.html">dropped</a> carrier it does nothing and returns <code>0</code>.
+</p>
+
+<h4>What the revoked client loses</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What they had</th><th>After <code>Revoke</code></th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>A place in <code>Approved</code></td>
+			<td>Gone. <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code> and <code>SendToRoom</code> all skip them, and <code>CallTo</code> returns <code>nil</code> without sending.</td>
+		</tr>
+		<tr>
+			<td>The right to send</td>
+			<td>Gone. Their <code>Emit</code> and <code>Call</code> are dropped at the door, before any listener or incoming middleware runs.</td>
+		</tr>
+		<tr>
+			<td>A mirror of a <a href="staged-tables.html">staged table</a> on this carrier</td>
+			<td>Dropped from the carrier's cache and marked released. It stops updating.</td>
+		</tr>
+		<tr>
+			<td>A place in a <a href="rooms.html">room</a></td>
+			<td>Untouched. They stay in every room they were in.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="flow">
+	<p class="flow__label">Server throws a client out</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">mods:Revoke(player)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">their approval is cleared</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">taken off every staged table on the carrier</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">__pigeon_table_revoke names those ids</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">the client drops those mirrors</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">Revoke returns how many were in</span>
+	</div>
+</div>
+
+<h4>The staged tables let go on their own</h4>
+
+<p>
+	For every staged table on the carrier that the player was subscribed to,
+	<code>Revoke</code> takes them off the subscriber list and remembers the id. If there
+	was at least one, it sends them a single reserved message,
+	<code>__pigeon_table_revoke</code>, naming those ids. That one goes straight down the
+	transport rather than through <code>BroadcastTo</code>, because the player has just
+	stopped being approved and <code>BroadcastTo</code> would filter them out.
+</p>
+
+<p>
+	On the client each named mirror is dropped from the carrier's cache and marked
+	released. Its release hook is cleared first, so the client does not report back
+	something the server has already done.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		This is the only thing <code>Revoke</code> sends. If the player held no mirror
+		from this carrier, nothing goes over the wire at all. Nobody is ever told they
+		lost the channel, exactly as when a guard is replaced.
+	</p>
+</div>
+
+<h4>It only blocks sending when a guard is installed</h4>
+
+<p>
+	<code>Approved</code> filters only when there is a guard, and every send runs through
+	<code>Approved</code>. So on a carrier with no <code>UseHandshake</code>,
+	<code>Revoke</code> stops nothing: the player keeps hearing every broadcast and can
+	still <code>Emit</code>. It does release their staged tables, and it returns
+	<code>0</code>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		<code>Revoke</code> on an open channel is not a mute. If you want it to shut
+		somebody out, the carrier needs a guard.
+	</p>
+</div>
+
+<h4>What they already received stays received</h4>
+
+<p>
+	<code>Revoke</code> cuts off the future. It cannot reach into a client's memory. Every
+	value they were sent before the call is still there, including the last copy of any
+	staged table they were mirroring. Do not treat it as making sent data secret again. If
+	something must never be seen, do not send it.
+</p>
+
+<h4>They can come back</h4>
+
+<p>
+	It is not a ban. The client can call <code>Handshake</code> again whenever it likes
+	and your guard judges it afresh. Approve it and the channel opens again, and a new
+	<code>RequestTable</code> for a released id fetches a fresh mirror with a fresh
+	snapshot. Rooms are left alone on purpose, so a player who gets back in resumes
+	hearing room sends with no bookkeeping from you.
+</p>
+
+<p>
+	If you want the removal to stick, the guard has to say no. Keep the decision in your
+	own state and read it from inside the guard.
+</p>
+
+<h2>The guard runs on every attempt</h2>
+
+<p>
+	Pigeon does not cache the answer. Each <code>Handshake</code> call runs your guard
+	again, and the newest answer is the one that counts. Three things follow from that.
+</p>
+
+<p>
+	<strong>A refusal is not permanent.</strong> A client turned away can try again
+	later and be let in, after a promotion for example. Nothing has to be rebuilt.
+</p>
+
+<p>
+	<strong>A later failure takes access away.</strong> If an approved client
+	handshakes again and the guard returns false this time, they are shut out again.
+	That is one of the two ways a single client loses access. The other is the server
+	calling <a href="#revoke"><code>Revoke</code></a>, which does not wait for the client
+	to ask. To shut everyone out at once, install a new guard.
+</p>
+
+<p>
+	<strong>A guard that errors refuses that attempt.</strong> Pigeon catches it, warns,
+	and answers false. It does not mark the player as refused though, so an approval
+	they already had is left alone. Only a guard that runs to the end and returns
+	something other than <code>true</code> revokes.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A client can call <code>Handshake</code> as often as it likes, and your guard runs
+		every single time. Keep it cheap. If it hits a datastore or anything else slow,
+		rate limit it yourself.
+	</p>
+</div>
+
+<p>
+	When you rate limit, do not return <code>false</code> for a call you are throttling.
+	That would revoke an approval the player already earned. Hand back the last answer
+	instead.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local lastTry = {}
+local lastAnswer = {}
+
+mods:UseHandshake(function(player, token)
+	local now = os.clock()
+
+	-- Too soon. Repeat the previous answer rather than refusing.
+	if lastTry[player] and now - lastTry[player] &lt; 1 then
+		return lastAnswer[player] == true
+	end
+	lastTry[player] = now
+
+	local granted = isModerator(player) and token == tokenFor(player)
+	lastAnswer[player] = granted
+	return granted
+end)
+
+game:GetService("Players").PlayerRemoving:Connect(function(player)
+	lastTry[player] = nil
+	lastAnswer[player] = nil
+end)</code></pre>
+</div>
+
+<h2>Replacing a guard</h2>
+
+<p>
+	A carrier holds one guard. Installing a second one replaces the first and closes the
+	channel again, because everyone who is currently in was judged by the old rules.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(oldRules)
+-- ... clients handshake and get in ...
+
+mods:UseHandshake(newRules)  -- everyone is out again</code></pre>
+</div>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Clients are not told. Nothing is sent when a guard is replaced, and the only
+		thing <a href="#revoke"><code>Revoke</code></a> sends is the message that releases
+		staged tables. A client that was in simply stops hearing anything, and its sends
+		stop arriving, until it calls <code>Handshake</code> again.
+	</p>
+</div>
+
+<p>
+	Replacing a guard clears the approved list, so patches stop reaching those clients
+	like any other broadcast. It does not take them off any staged table though, and it
+	does not release their mirrors. The copies they hold just go stale.
+	<a href="#revoke"><code>Revoke</code></a> is the call that makes a client let go.
+</p>
+
+<p>
+	There is no public way to take a guard off once it is on. The closest thing is
+	replacing it with one that lets everyone in, and even then every client has to
+	handshake once more, because installing it cleared the approved list.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>-- Reopens the channel, but nobody is approved until they ask again.
+mods:UseHandshake(function()
+	return true
+end)</code></pre>
+</div>
+
+<h2>Messages sent while a client is locked out are gone</h2>
+
+<p>
+	The guard filter runs before the startup queue, not after it. A client that is not
+	approved yet is removed from the recipient list, so there is nothing left to queue
+	for them.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Broadcasts made before a client passes the handshake are not held for them. They
+		are not queued and they do not arrive late. If a client needs the current state
+		after it gets in, have it ask with <code>Call</code>.
+	</p>
+</div>
+
+<p>
+	Once a client is approved the normal rules take over again, so a message sent
+	before it has called <code>Init</code> is queued as usual.
+</p>
+
+<h2>A moderator only channel</h2>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player) and token == tokenFor(player)
+end)
+
+-- Nothing reaches this handler unless the guard approved the sender.
+mods:On("Kick", function(player, targetName)
+	local target = findPlayer(targetName)
+	if not target then
+		return false, "no such player"
+	end
+	target:Kick("Kicked by " .. player.Name)
+	return true
+end)
+
+-- Only approved moderators see this. Everyone else is filtered out.
+mods:Broadcast("Alert", "10 reports on the same player")</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local mods = Pigeon.new("Moderation")
+
+mods:On("Alert", function(text)
+	showModAlert(text)
+end)
+
+-- Handlers first, then open the inbound side, then ask to be let in.
+mods:Init()
+
+if mods:Handshake(myToken) then
+	local ok, reason = mods:Call("Kick", "someone")
+	if not ok then
+		print("kick failed:", reason)
+	end
+end</code></pre>
+</div>
+
+<p>
+	A player who is not a moderator can build the same carrier, register the same
+	handlers and call <code>Emit</code> all day. Nothing they send reaches a listener and
+	no alert ever reaches them.
+</p>
+
+<h2>Demoting a moderator</h2>
+
+<p>
+	Someone loses the role while they are online. You want them off the channel now, not
+	the next time they happen to handshake. That is two lines: change the state your guard
+	reads, then <a href="#revoke"><code>Revoke</code></a> them.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local mods = Pigeon.new("Moderation")
+
+local rank = {}   -- Player -> string
+
+mods:UseHandshake(function(player, token)
+	return rank[player] == "moderator" and token == tokenFor(player)
+end)
+
+-- The live report queue, mirrored by every moderator that asks for it.
+local queue = Pigeon.StagedTable({ open = {} })
+mods:CaptureTable("report_queue", queue)
+
+local function demote(player)
+	-- Change this first. The guard reads it, so a fresh Handshake now fails too.
+	rank[player] = "player"
+
+	-- Clears their approval and releases their mirror of report_queue.
+	local removed = mods:Revoke(player)
+
+	if removed == 1 then
+		-- They are already out, so this does not reach them.
+		mods:Broadcast("Alert", player.Name .. " is no longer a moderator")
+	end
+end</code></pre>
+</div>
+
+<p>
+	Order matters. <code>Revoke</code> on its own lasts until the client asks again, and
+	your guard would still say yes. Setting <code>rank</code> first is what makes it
+	stick.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:On("Alert", showModAlert)
+mods:Init()
+
+if mods:Handshake(myToken) then
+	local queue = mods:RequestTable("report_queue")
+	renderQueue(queue:GetTable())
+end
+
+-- After the server revokes: no more alerts, nothing this client emits arrives,
+-- and queue stops updating. What it already drew is still on screen.</code></pre>
+</div>
+
+<p>
+	The client is not told any of that happened. If it needs to know, have it call
+	<code>Handshake</code> again on a timer or when the user does something, and read the
+	answer.
+</p>
+
+<h2>Odds and ends</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Situation</th><th>What happens</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>A player leaves and rejoins</td>
+			<td>Their approval is dropped when they leave. They must handshake again.</td>
+		</tr>
+		<tr>
+			<td>The guard returns a truthy value that is not <code>true</code></td>
+			<td>Counts as a refusal.</td>
+		</tr>
+		<tr>
+			<td>The carrier is dropped</td>
+			<td><code>Handshake</code> returns <code>false</code>. The guard and the approved list are cleared.</td>
+		</tr>
+		<tr>
+			<td>Nobody at all is approved</td>
+			<td>A broadcast does nothing. Outgoing middleware does not even run.</td>
+		</tr>
+		<tr>
+			<td>Two carriers share a <a href="transformers.html">transformer</a></td>
+			<td>Guards are per carrier. Locking one says nothing about the other.</td>
+		</tr>
+		<tr>
+			<td>You <a href="#revoke">revoke</a> somebody who was never approved</td>
+			<td>They do not count towards the return value. Any staged table they were still on the list for is dropped anyway.</td>
+		</tr>
+		<tr>
+			<td>You revoke the same player twice</td>
+			<td>The second call returns <code>0</code>. There is nothing left to clear.</td>
+		</tr>
+		<tr>
+			<td>You revoke a player who is in a room</td>
+			<td>They stay in the room. The guard is what stops the sends reaching them.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Pigeon exposes no public flag on the client for whether you are still in. The only
+	signal is what <code>Handshake</code> returned. Hold on to it, and call
+	<code>Handshake</code> again if you want a fresh answer.
+</p>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="middleware.html">Middleware</a> for shaping messages that already got past the guard.</li>
+	<li><a href="startup.html">Startup and Buffering</a> for what is queued and what is not.</li>
+	<li><a href="staged-tables.html">Staged Tables</a> for the mirrors <code>Revoke</code> makes a client let go of.</li>
+	<li><a href="../api/carrier.html#revoke">Carrier</a> for the full method list, including <code>Revoke</code>.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

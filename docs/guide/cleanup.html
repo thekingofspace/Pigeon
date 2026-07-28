@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cleanup | Pigeon</title>
+<meta name="description" content="How to turn a carrier off: what Destroy disconnects, what survives it, and how to tear down a whole system.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Cleanup</h1>
+
+<p class="lead">
+	Turning things off. One call drops a carrier and everything it subscribed to, and a
+	dropped carrier goes quiet rather than erroring on you.
+</p>
+
+<h2 id="carrier-destroy">Destroy <span class="badge badge--shared">Shared</span></h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Destroy() -> ()</code></pre>
+</div>
+
+<p>
+	Takes no parameters and returns nothing. Works the same on the server and on the
+	client.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("Buy", function(player, itemId)
+	print(player.Name, "bought", itemId)
+end)
+
+shop:Broadcast("Open", true)
+
+shop:Destroy()</code></pre>
+</div>
+
+<p>That single call does all of this:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What</th><th>Result</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Transport bindings</td><td>Every subscription the carrier made is disconnected. Nothing arrives any more.</td></tr>
+		<tr><td>Listeners</td><td>Cleared. Your <code>On</code> handlers are dropped.</td></tr>
+		<tr><td>Rooms</td><td>Cleared. Every room this carrier held is gone.</td></tr>
+		<tr><td>Handshake</td><td>The guard is removed and the list of admitted players is emptied.</td></tr>
+		<tr><td>Middleware</td><td>Both chains are emptied, so the closures you passed are released.</td></tr>
+		<tr><td>Staged tables</td><td>Replication stops. See below for the detail.</td></tr>
+		<tr><td>Engine connections</td><td>The <code>PlayerRemoving</code> hook the carrier keeps on the server is disconnected.</td></tr>
+		<tr><td>Sending</td><td>The carrier is inert. Nothing it sends leaves the machine.</td></tr>
+		<tr><td>The name cache</td><td>The carrier is evicted, so the next <code>Pigeon.new</code> builds a live one.</td></tr>
+		<tr><td>Its transformer</td><td>Destroyed, but only if the carrier made it itself.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Middleware is cleared for a reason worth saying out loud. A middleware function is a
+	closure you wrote, and it can hold a reference to anything at all. Leaving those on
+	a dead object would keep whatever they captured alive.
+</p>
+
+<h2>Calling it twice is safe</h2>
+
+<p>
+	The second call does nothing. Teardowns run once and only once, so you never have to
+	guard it or track whether you already did it.
+</p>
+
+<pre><code>shop:Destroy()
+shop:Destroy()   -- fine, does nothing</code></pre>
+
+<h2>A dropped carrier goes quiet</h2>
+
+<p>
+	Sending on a dead carrier does not throw. It just does not happen. Teardown often
+	races with work already in flight, and an error there would spread into code that
+	did nothing wrong.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Call on a dropped carrier</th><th>What happens</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Emit</code>, <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code></td><td>Returns immediately. Nothing sent.</td></tr>
+		<tr><td><code>Call</code>, <code>CallTo</code></td><td>Returns <code>nil</code> straight away. Does not yield.</td></tr>
+		<tr><td><code>Handshake</code></td><td>Returns <code>false</code>.</td></tr>
+		<tr><td><code>Init</code></td><td>Returns the carrier and does nothing else.</td></tr>
+		<tr><td><code>Ping</code></td><td>Returns a number near zero. The round trip never happened.</td></tr>
+		<tr><td><code>Off</code></td><td>Does nothing. The listener list is already empty.</td></tr>
+		<tr><td><code>Destroy</code></td><td>Does nothing.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+shop:Destroy()
+
+shop:Emit("Buy", "sword")             -- nothing happens, no error
+local answer = shop:Call("Anything")  -- nil, returns at once, does not yield</code></pre>
+</div>
+
+<p>Three calls do not stay silent.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Call on a dropped carrier</th><th>What happens</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>SendToRoom</code></td><td>Warns <code>ERR_NO_ROOM</code> and gives up. Destroy cleared the rooms, so the name it is given no longer exists. Nothing is sent.</td></tr>
+		<tr><td><code>RequestTable</code></td><td>Throws <code>ERR_CAPTURE_DENIED</code>. The request underneath returns <code>nil</code>, which reads as a refusal.</td></tr>
+		<tr><td><code>Approved</code></td><td>Returns every player you passed it, or every player in the game if you passed none. Destroy removes the guard, and no guard means no filter. See <a href="known-issues.html">Known Issues</a>.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	The wrong-machine checks still fire. Calling a server method on the client throws
+	<code>ERR_NOT_SERVER</code> whether the carrier is alive or not, and the same the
+	other way round. Being dead does not excuse calling <code>Broadcast</code> from a
+	LocalScript.
+</p>
+
+<h2>It leaves the name cache</h2>
+
+<p>
+	<code>Pigeon.new("Shop")</code> with no options hands back a cached carrier. Destroy
+	removes that entry, so the next lookup builds a fresh live one instead of handing
+	you the corpse.
+</p>
+
+<pre><code>local a = Pigeon.new("Shop")
+print(a == Pigeon.new("Shop"))   --> true, same object
+
+a:Destroy()
+
+local b = Pigeon.new("Shop")
+print(a == b)                    --> false, b is a new live carrier</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		That cache is shared. Every part of your code that asks for <code>"Shop"</code>
+		holds the same object, so destroying it turns the channel off for all of them,
+		not just for you. Only destroy a cached carrier when you own the whole channel.
+		If you want a carrier of your own to destroy, build it with options, which never
+		gets cached. See <a href="carriers.html">Carriers</a>.
+	</p>
+</div>
+
+<h2>Destroying a transformer drops every carrier on it</h2>
+
+<p>
+	A transformer is the thing that picks which remote a carrier's traffic rides on.
+	Every carrier that rides on one registers its own teardown there, so destroying the
+	transformer destroys all of them.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local damage = Pigeon.new("Damage", { Transformer = combat })
+local status = Pigeon.new("Status", { Transformer = combat })
+local effects = Pigeon.new("Effects", { Transformer = combat })
+
+-- One call drops all three, with every listener on them.
+combat:Destroy()
+
+damage:Broadcast("Hit", 10)   -- goes nowhere, the carrier is inert</code></pre>
+</div>
+
+<p>
+	This is the tidiest way to turn off a whole feature. Put its channels on one
+	transformer when you build them and you have a single switch later. See
+	<a href="transformers.html">Transformers</a>.
+</p>
+
+<p>
+	Ownership decides which way it runs. A carrier that made its own transformer takes
+	it down with it. A transformer you passed in belongs to you, so
+	<code>carrier:Destroy()</code> leaves it alone.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>How you built it</th><th><code>carrier:Destroy()</code></th><th><code>transformer:Destroy()</code></th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Pigeon.new("Shop")</code></td><td>Drops the carrier and its transformer</td><td>Drops the carrier</td></tr>
+		<tr><td><code>Pigeon.new("Shop", { Transformer = t })</code></td><td>Drops the carrier, leaves <code>t</code> alone</td><td>Drops every carrier on <code>t</code></td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>Staged tables survive</h2>
+
+<p>
+	A staged table is not owned by the carrier that published it. The carrier is only a
+	pointer to it. Destroying the carrier stops the replication, but the table object
+	and its contents are untouched.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local scores = Pigeon.StagedTable({ round = 1 })
+
+local old = Pigeon.new("Match")
+old:CaptureTable("Scores", scores)
+
+old:Destroy()
+
+-- The data is still there, and a new carrier can publish it again.
+print(scores:GetTable().round)   --> 1
+
+local fresh = Pigeon.new("Match")
+fresh:CaptureTable("Scores", scores)</code></pre>
+</div>
+
+<p>What Destroy does to each side:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Side</th><th>Effect on its staged tables</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Server</td><td>Writes stop being broadcast, and the subscriber list is emptied. The table keeps its data.</td></tr>
+		<tr><td>Client</td><td>The local mirror is marked released and stops updating. Its release hook is removed.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Destroying a carrier on the client does not tell the server about it. The server
+		still counts that player as a subscriber until they leave the game. If you want
+		the server told, call <code>Release()</code> on the mirror before you destroy
+		the carrier. See <a href="staged-tables.html">Staged Tables</a>.
+	</p>
+</div>
+
+<h2>Turning off one listener instead</h2>
+
+<p>
+	Destroy is the big hammer. Most of the time you only want one handler gone, and
+	that is <code>Off</code>.
+</p>
+
+<h3 id="off">Off <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Off(event: string, Callback: (() -> ())?) -> ()</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to unbind.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>(() -> ())?</code></td><td>The one handler to drop. Leave it out to drop every handler for the event.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+local function onBuy(player, itemId)
+	print(player.Name, itemId)
+end
+
+shop:On("Buy", onBuy)
+
+shop:Off("Buy", onBuy)   -- drop this one handler
+shop:Off("Buy")          -- drop every handler for "Buy"</code></pre>
+</div>
+
+<p>
+	When the last handler for an event is removed, Pigeon drops the underlying transport
+	binding too. So <code>Off</code> is real cleanup, not just a filter. The carrier
+	itself keeps working.
+</p>
+
+<h2>Players who leave clean up on their own</h2>
+
+<p>
+	You do not have to do anything when a player disconnects. On the server, Pigeon
+	removes them from every room on the carrier, from the list of players the handshake
+	admitted, and from the subscriber list of every staged table the carrier holds.
+	Anything the server was still holding for that player is thrown away.
+</p>
+
+<h2>A teardown checklist</h2>
+
+<p>Tearing down a feature, in order.</p>
+
+<div class="flow">
+	<p class="flow__label">Shutting a system down</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">your own connections</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">release staged tables</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">Destroy the carrier or transformer</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">drop your references</span>
+	</div>
+</div>
+
+<ol>
+	<li>
+		Disconnect anything you connected yourself. Heartbeat loops, <code>Touched</code>
+		signals, tween completions. Pigeon does not know about those. You can hand them
+		to <code>transformer:Track</code> so they go with the group, which is what
+		<a href="../api/transformer.html">Transformer</a> covers.
+	</li>
+	<li>
+		On the client, call <code>Release()</code> on any staged table mirror you no
+		longer want, so the server stops sending you patches.
+	</li>
+	<li>
+		Call <code>Destroy</code>. On the carrier if it is one channel, on the shared
+		transformer if the feature is several channels that belong together.
+	</li>
+	<li>
+		Set your references to <code>nil</code>. The carrier is inert but it is still an
+		object, and something has to let go of it.
+	</li>
+	<li>
+		Do not call <code>On</code> on it afterwards. See the note below.
+	</li>
+</ol>
+
+<h2>Checking nothing leaked</h2>
+
+<p>
+	The transport can tell you what it is still holding on this machine. Useful in tests
+	and when you suspect something is not letting go.
+</p>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.Network.Diagnostics() -> {listeners: number, orphaned: number, pending: number, readySeats: number, bufferedPackets: number, readyChannels: number, bufferedChannels: number, outbound: number}</code></pre>
+</div>
+
+<p>Takes no parameters. Returns one table of counts.</p>
+
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local counts = Pigeon.Network.Diagnostics()
+print(counts.listeners, counts.pending, counts.bufferedPackets)</code></pre>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Field</th><th>What it counts</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>listeners</code></td><td>Event names with at least one transport binding.</td></tr>
+		<tr><td><code>orphaned</code></td><td>Packets held because nothing was listening yet.</td></tr>
+		<tr><td><code>pending</code></td><td>Requests still waiting for an answer.</td></tr>
+		<tr><td><code>readySeats</code></td><td>Player and channel pairs that have called <code>Init</code>.</td></tr>
+		<tr><td><code>readyChannels</code></td><td>Channels with at least one ready client.</td></tr>
+		<tr><td><code>bufferedPackets</code></td><td>Messages queued for clients that are not ready.</td></tr>
+		<tr><td><code>bufferedChannels</code></td><td>Channels with something queued.</td></tr>
+		<tr><td><code>outbound</code></td><td>Packets the client is holding until the remote pool replicates. Always <code>0</code> on the server.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	These are counts for the whole machine, not for one carrier. After you tear a system
+	down they should settle back to where they were. Queues and pending requests expire
+	on their own, so give it a few seconds before you decide something is stuck.
+</p>
+
+<h2>Known issue</h2>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Calling <code>On</code> on a carrier you already destroyed can register a live
+		subscription on a dead object. It is not blocked and it does not warn. It happens
+		when the carrier was built on a transformer you passed in, because
+		<code>Destroy</code> leaves that transformer alone and a live transformer is the
+		only thing <code>On</code> checks. Do not reuse a destroyed carrier. Build a new
+		one. See <a href="known-issues.html">Known Issues</a>.
+	</p>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="transformers.html">Transformers</a> for grouping channels so one call drops them all.</li>
+	<li><a href="known-issues.html">Known Issues</a> for the sharp edges around teardown.</li>
+	<li><a href="../api/carrier.html">Carrier</a> for the full method list.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

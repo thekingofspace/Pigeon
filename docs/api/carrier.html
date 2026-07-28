@@ -1,0 +1,1787 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carrier | Pigeon</title>
+<meta name="description" content="Full API reference for the Pigeon carrier: listening, sending, requests, rooms, handshakes, middleware, staged tables and cleanup.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Carrier</h1>
+
+<p class="lead">
+	A carrier is a named channel. It is the object you send on and listen on, and it is
+	the only Pigeon object most games ever touch. You make one with
+	<a href="pigeon.html"><code>Pigeon.new</code></a>.
+</p>
+
+<p>
+	The name is the channel. Build <code>Pigeon.new("Shop")</code> on the server and
+	<code>Pigeon.new("Shop")</code> on the client and the two are talking. Nothing else
+	has to match.
+</p>
+
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local shop = Pigeon.new("Shop")</code></pre>
+
+<h2>Things that are true of every method</h2>
+
+<ul>
+	<li>Call them with a colon: <code>carrier:Emit("Buy", id)</code>.</li>
+	<li>
+		Server listeners are called with <code>(player, ...)</code>. Client listeners are
+		called with <code>(...)</code>, because there is only one sender.
+	</li>
+	<li>
+		Every event name is scoped to the carrier before it goes on the wire. It travels
+		as <code>name .. "\0" .. event</code>, so two carriers with different names never
+		hear each other, even if they share a
+		<a href="transformer.html">transformer</a>.
+	</li>
+	<li>
+		Event names starting with <code>__pigeon_</code> are reserved. Pigeon runs ping,
+		handshakes and staged tables over them. Do not use that prefix.
+	</li>
+	<li>
+		A server-only method called on the client errors with
+		<code>ERR_NOT_SERVER</code>, and a client-only method called on the server errors
+		with <code>ERR_NOT_CLIENT</code>. The error points at your call site, not at
+		Pigeon. <a href="#approved"><code>Approved</code></a> is the one exception: it
+		never checks which machine it is on.
+	</li>
+	<li>
+		Once a carrier is dropped it goes quiet instead of erroring. Sends do nothing,
+		<code>Call</code> returns <code>nil</code>. See
+		<a href="#destroy">Destroy</a>.
+	</li>
+</ul>
+
+<h2>Every method at a glance</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>Side</th><th>What it does</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><a href="#on"><code>On</code></a></td><td>Shared</td><td>Runs a callback when an event arrives.</td></tr>
+		<tr><td><a href="#off"><code>Off</code></a></td><td>Shared</td><td>Removes one listener, or all of them for an event.</td></tr>
+		<tr><td><a href="#emit"><code>Emit</code></a></td><td>Client</td><td>Fires an event at the server and does not wait.</td></tr>
+		<tr><td><a href="#broadcast"><code>Broadcast</code></a></td><td>Server</td><td>Fires an event at every player.</td></tr>
+		<tr><td><a href="#broadcastto"><code>BroadcastTo</code></a></td><td>Server</td><td>Fires an event at a list of players.</td></tr>
+		<tr><td><a href="#broadcastexcept"><code>BroadcastExcept</code></a></td><td>Server</td><td>Fires an event at everyone but the players you name.</td></tr>
+		<tr><td><a href="#call"><code>Call</code></a></td><td>Client</td><td>Asks the server something and waits for the answer.</td></tr>
+		<tr><td><a href="#callto"><code>CallTo</code></a></td><td>Server</td><td>Asks one client something and waits for the answer.</td></tr>
+		<tr><td><a href="#ping"><code>Ping</code></a></td><td>Client</td><td>Measures the round trip to the server in seconds.</td></tr>
+		<tr><td><a href="#init"><code>Init</code></a></td><td>Client</td><td>Opens the channel so the server may send to you.</td></tr>
+		<tr><td><a href="#createroom"><code>CreateRoom</code></a></td><td>Server</td><td>Makes a room and puts players in it.</td></tr>
+		<tr><td><a href="#destroyroom"><code>DestroyRoom</code></a></td><td>Server</td><td>Deletes a room.</td></tr>
+		<tr><td><a href="#joinroom"><code>JoinRoom</code></a></td><td>Server</td><td>Adds players to a room, making it if needed.</td></tr>
+		<tr><td><a href="#leaveroom"><code>LeaveRoom</code></a></td><td>Server</td><td>Takes players out of a room.</td></tr>
+		<tr><td><a href="#sendtoroom"><code>SendToRoom</code></a></td><td>Server</td><td>Fires an event at every member of a room.</td></tr>
+		<tr><td><a href="#usehandshake"><code>UseHandshake</code></a></td><td>Server</td><td>Closes the channel behind a guard you write.</td></tr>
+		<tr><td><a href="#handshake"><code>Handshake</code></a></td><td>Client</td><td>Presents credentials to the guard and waits for a ruling.</td></tr>
+		<tr><td><a href="#approved"><code>Approved</code></a></td><td>Server</td><td>Narrows a player list to those the guard let in.</td></tr>
+		<tr><td><a href="#revoke"><code>Revoke</code></a></td><td>Server</td><td>Takes admission back off players and releases their staged tables.</td></tr>
+		<tr><td><a href="#useincoming"><code>UseIncoming</code></a></td><td>Shared</td><td>Adds middleware to the inbound path.</td></tr>
+		<tr><td><a href="#useoutgoing"><code>UseOutgoing</code></a></td><td>Shared</td><td>Adds middleware to the outbound path.</td></tr>
+		<tr><td><a href="#capturetable"><code>CaptureTable</code></a></td><td>Server</td><td>Publishes a staged table under an id.</td></tr>
+		<tr><td><a href="#releasetable"><code>ReleaseTable</code></a></td><td>Server</td><td>Drops this carrier's pointer to a staged table.</td></tr>
+		<tr><td><a href="#forcetable"><code>ForceTable</code></a></td><td>Server</td><td>Pushes a staged table onto clients without being asked.</td></tr>
+		<tr><td><a href="#requesttable"><code>RequestTable</code></a></td><td>Client</td><td>Asks for a staged table and waits for the first copy.</td></tr>
+		<tr><td><a href="#destroy"><code>Destroy</code></a></td><td>Shared</td><td>Drops the carrier and everything it subscribed to.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>Properties</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier.Unreliable: boolean</code></pre>
+</div>
+
+<p>
+	<code>false</code> unless you passed <code>Unreliable = true</code> in the options.
+	When it is <code>true</code>, <a href="#emit"><code>Emit</code></a> and every
+	broadcast take the lossy lane: an UnreliableRemoteEvent, which is cheaper but may
+	drop a packet and may deliver out of order. Staged table snapshots and patches go
+	out as broadcasts, so they take that lane too. Do not set this on a carrier that
+	replicates a staged table.
+</p>
+
+<p>
+	It is read at the moment of each send, so you can flip it whenever you like.
+</p>
+
+<pre><code>local pos = Pigeon.new("Positions", { Unreliable = true })
+
+-- Or set it later on a carrier you already have.
+pos.Unreliable = false</code></pre>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Requests always take the reliable lane whatever this is set to, because a reply
+		that goes missing would strand the thread waiting on it. So
+		<a href="#call"><code>Call</code></a>,
+		<a href="#callto"><code>CallTo</code></a>,
+		<a href="#ping"><code>Ping</code></a>,
+		<a href="#handshake"><code>Handshake</code></a> and
+		<a href="#requesttable"><code>RequestTable</code></a> ignore it. Server to
+		client unreliable packets are also never queued for a client that has not called
+		<a href="#init"><code>Init</code></a>. They are dropped instead.
+	</p>
+</div>
+
+<p>Read more in <a href="../guide/unreliable.html">Unreliable Sending</a>.</p>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier.Timeout: number?</code></pre>
+</div>
+
+<p>
+	How many seconds a request waits before giving up. <code>nil</code> by default,
+	which means 10 seconds. Set it to a number to change it for every
+	<code>Call</code>, <code>CallTo</code>, <code>Ping</code>,
+	<code>Handshake</code> and <code>RequestTable</code> on this carrier.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+shop.Timeout = 3  -- give up after three seconds instead of ten</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Setting these two through options has a catch.
+		<code>Pigeon.new(name, options)</code> always builds a fresh, uncached carrier,
+		so the next <code>Pigeon.new(name)</code> somewhere else in your code gets a
+		different object. If you only want to change these fields, take the cached
+		carrier and assign them, as above.
+	</p>
+</div>
+
+<h2>Listening</h2>
+
+<h3>On <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:On(event: string, Callback: (...any) -> ...any) -> ()</code></pre>
+</div>
+
+<p>
+	Runs your callback every time that event arrives on this channel. Whatever the
+	callback returns is the answer to a <code>Call</code> or <code>CallTo</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to listen for.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>(...any) -> ...any</code></td><td>Runs for each matching message.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- The player who sent it comes first.
+shop:On("Buy", function(player, itemId)
+	if not canAfford(player, itemId) then
+		return false, "too expensive"
+	end
+	giveItem(player, itemId)
+	return true
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- No player argument here.
+shop:On("StockChanged", function(stock)
+	updateShopUi(stock)
+end)
+
+-- Nothing arrives until the channel is open.
+shop:Init()</code></pre>
+</div>
+
+<h4>Several listeners on one event</h4>
+
+<p>
+	You can add as many as you like. They all run, in the order you added them, one
+	after another on the same thread. A listener that yields holds up the ones behind
+	it.
+</p>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Only one of them can answer a request. Every listener that does not error sends a
+		reply, even one that returns nothing, but the waiting side keeps the first reply
+		it receives and ignores the rest. If an event is answering a <code>Call</code>,
+		give it one listener.
+	</p>
+</div>
+
+<h4>A listener that errors</h4>
+
+<p>
+	Errors are caught, not raised. Pigeon warns with
+	<code>ERR_CALLBACK_ERROR | Error in listener callback for event '...'</code> and
+	carries on with the next listener. No reply is sent for a listener that errored, so
+	a <code>Call</code> waiting on it sits there until it times out.
+</p>
+
+<h4>Listening slightly too late</h4>
+
+<p>
+	A message that arrives when nothing is listening for that event is held for 10
+	seconds, up to 64 messages per event, and replayed to the first listener that
+	registers. That covers the gap between the channel opening and your handler being
+	set up. It is not a substitute for registering handlers before
+	<a href="#init"><code>Init</code></a>.
+</p>
+
+<p>
+	Only the first listener gets the backlog. A second one registered afterwards was not
+	there for it either way. A held message has already run the incoming middleware
+	chain, when it arrived, and does not run it again on the way to your handler. See
+	<a href="../guide/middleware.html">Middleware</a>.
+</p>
+
+<h4>On a destroyed carrier</h4>
+
+<p>
+	It does nothing, and does not error. A destroyed carrier registers no listeners and
+	holds on to none, so the callback you pass is dropped rather than kept alive. Build a
+	fresh carrier when you need the channel again. See
+	<a href="../guide/cleanup.html">Cleanup</a>.
+</p>
+
+<h3>Off <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Off(event: string, Callback: (() -> ())?) -> ()</code></pre>
+</div>
+
+<p>
+	Removes one listener. Leave the callback out to remove every listener for that
+	event. Once nothing is listening any more, the underlying subscription is dropped
+	too.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to stop listening to.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>(() -> ())?</code></td><td>The exact function to remove. Omit to remove all of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing. Removing a listener that was never added does nothing.</p>
+
+<pre><code>local function onSold(id)
+	print("sold", id)
+end
+
+shop:On("Sold", onSold)
+shop:Off("Sold", onSold)   -- removes that one
+shop:Off("Sold")           -- removes everything left on "Sold"</code></pre>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Matching is by function identity. A callback you wrote inline as
+		<code>shop:On("Sold", function(id) ... end)</code> cannot be removed on its own,
+		because you have no reference to it. Keep it in a local if you plan to remove it.
+	</p>
+</div>
+
+<h2>Sending from the client</h2>
+
+<h3>Emit <span class="badge badge--client">Client</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Emit(event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Fires an event at the server and moves on. It never waits and it never tells you
+	whether anyone heard.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on the server.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload. Anything a RemoteEvent can carry.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:Emit("Browse", "swords")</code></pre>
+</div>
+
+<p>
+	Sending never needs <a href="#init"><code>Init</code></a>. You can emit on the
+	first frame of your script. If the RemoteEvent pool has not replicated yet, the
+	message is held on your machine and sent the moment it does, so nothing yields. That
+	queue is shared by everything this client sends. It holds 64 messages for 30 seconds
+	and drops the oldest to make room.
+</p>
+
+<p>Errors with <code>ERR_NOT_CLIENT</code> if you call it on the server.</p>
+
+<h2>Sending from the server</h2>
+
+<h3>Broadcast <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Broadcast(event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>Fires an event at every player in the game.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:Broadcast("StockChanged", getStock())</code></pre>
+</div>
+
+<p>
+	This is <a href="#broadcastto"><code>BroadcastTo</code></a> with the current
+	player list, so everything that method does applies here too: the handshake guard
+	filters the recipients, and a reliable send to someone who has not called
+	<code>Init</code> is queued rather than dropped.
+</p>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>BroadcastTo <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:BroadcastTo(Targets: {Player}, event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Fires an event at the players you list. Every other fire-and-forget send from the
+	server ends up here, so this is the one place those recipients are filtered.
+	<a href="#callto"><code>CallTo</code></a> is the exception. It checks its one
+	player itself and does not come through here.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Targets</code></td><td><code>{Player}</code></td><td>The recipients. Must be a list.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing. If nobody in the list is allowed to receive, nothing is sent at all.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local party = { playerA, playerB }
+
+raid:BroadcastTo(party, "BossSpawned", bossId)
+
+-- One player still needs a list.
+raid:BroadcastTo({ playerA }, "Whisper", "you are next")</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		This one does not accept a bare <code>Player</code>. Pass
+		<code>{ player }</code>, not <code>player</code>, or you will get a Luau error
+		when Pigeon tries to treat that Instance as a list.
+		<a href="#broadcastexcept"><code>BroadcastExcept</code></a>,
+		<a href="#joinroom"><code>JoinRoom</code></a>,
+		<a href="#leaveroom"><code>LeaveRoom</code></a> and
+		<a href="#forcetable"><code>ForceTable</code></a> do accept one player on
+		its own.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>BroadcastExcept <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:BroadcastExcept(Skip: {Player}, event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Fires an event at everyone except the players you name. Useful for telling the rest
+	of the server about something the player who caused it already knows.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Skip</code></td><td><code>{Player}</code></td><td>Who to leave out. A single <code>Player</code> works too.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each remaining client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>chat:On("Say", function(player, text)
+	-- Everyone but the speaker.
+	chat:BroadcastExcept(player, "Message", player.Name, text)
+end)</code></pre>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h2>Requests</h2>
+
+<p>
+	A request is a send that waits for an answer. The listener on the far side answers
+	it by returning a value. Read <a href="../guide/requests.html">Requests and
+	Replies</a> for the whole picture.
+</p>
+
+<div class="flow">
+	<p class="flow__label">One request</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">Call("Buy", id)</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">On("Buy") runs</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">its return value goes back</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">Call returns</span>
+	</div>
+</div>
+
+<h3>Call <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Call(event: string, ...: any) -> ...any</code></pre>
+</div>
+
+<p>
+	Asks the server something and waits. Returns whatever the server's listener
+	returned, all of it, in order.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on the server.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The request payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> the server listener's return values, or a single
+	<code>nil</code> if the call timed out or the carrier has been dropped.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ok, reason = shop:Call("Buy", "sword")
+
+if not ok then
+	print("could not buy:", reason)
+end</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		A timeout and a listener that returned nothing look exactly the same from here:
+		both give you <code>nil</code>. If you need to tell them apart, return an explicit
+		value from the server, such as <code>true</code> or a status string.
+	</p>
+</div>
+
+<h4>What the wait covers</h4>
+
+<p>
+	The clock starts when you call, not when the packet leaves. So the wait for the
+	RemoteEvent pool to replicate on a fresh join is inside your timeout, and you never
+	wait longer than you asked for. The default is 10 seconds. Change it with
+	<code>carrier.Timeout</code>.
+</p>
+
+<p>
+	<code>Call</code> does not need <code>Init</code>. Replies are never queued, so a
+	call works before the channel has been opened for inbound traffic.
+</p>
+
+<p>Errors with <code>ERR_NOT_CLIENT</code> if you call it on the server.</p>
+
+<h3>CallTo <span class="badge badge--server">Server</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:CallTo(Target: Player, Event: string, ...: any) -> ...any</code></pre>
+</div>
+
+<p>
+	Asks one client something and waits. Note the capital letters on these parameter
+	names, and that the player comes first.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Target</code></td><td><code>Player</code></td><td>The one client to ask.</td></tr>
+		<tr><td><code>Event</code></td><td><code>string</code></td><td>The event to raise on that client.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The request payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> the client listener's return values, or <code>nil</code> if
+	the call timed out, the player left, the carrier has been dropped, or a handshake
+	guard is installed and that player has not passed it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local settings = ui:CallTo(player, "GetSettings")
+
+if settings then
+	saveSettings(player, settings)
+end</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Never trust what comes back. A client answers a <code>CallTo</code> with whatever
+		it likes, including a value shaped to fool you. Treat it as player input.
+	</p>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		If that client has not called <a href="#init"><code>Init</code></a> on this
+		channel yet, the request sits in the server's queue for them and your thread waits
+		anyway. Unless they open the channel inside your timeout, the call comes back
+		<code>nil</code>.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>Ping <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Ping() -> number</code></pre>
+</div>
+
+<p>
+	Measures the round trip to the server in seconds. It takes no arguments. The server
+	side of every carrier answers this on its own, so there is nothing to set up.
+</p>
+
+<p><strong>Returns</strong> a number of seconds.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local seconds = shop:Ping()
+print(string.format("%d ms", seconds * 1000))</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		This measures the whole trip, not just the network. Your outgoing middleware here,
+		your incoming middleware on the server, the time the request spends queued waiting
+		for the remote pool on a fresh join, and the server's own scheduling are all in the
+		number. The first ping of a session is usually the odd one out.
+	</p>
+	<p>
+		It also never fails loudly. A ping that times out returns roughly the timeout, and
+		a ping on a dropped carrier returns a number close to zero.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_CLIENT</code> if you call it on the server.</p>
+
+<h2>Startup</h2>
+
+<h3>Init <span class="badge badge--client">Client</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Init() -> PigeonCarrier</code></pre>
+</div>
+
+<p>
+	Tells the server this client is ready to receive on this channel. Until you call it,
+	the server holds everything it sends you here. Call it once, after your
+	<code>On</code> handlers are in place.
+</p>
+
+<p><strong>Returns</strong> the carrier, so you can chain from it. It never yields.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("StockChanged", updateShopUi)
+shop:On("Sold", flashItem)
+
+-- Handlers first, then open the channel. The backlog arrives in order.
+shop:Init()</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Thing</th><th>What actually happens</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Called twice</td><td>The second call does nothing.</td></tr>
+		<tr><td>Called on the server</td><td>Does nothing and returns the carrier, so shared code can call it either way.</td></tr>
+		<tr><td>Called on a dropped carrier</td><td>Does nothing and returns the carrier.</td></tr>
+		<tr><td>Never called</td><td>You can still send. You just never receive.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h4>What the server was holding</h4>
+
+<p>
+	The queue is per channel and per player. It holds 64 messages for 30 seconds, oldest
+	dropped first once it is full. Opening one channel releases only that channel's
+	backlog, so bringing your channels up one at a time is safe. Unreliable sends are
+	never queued.
+</p>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Do not chain <code>Pigeon.new("Shop"):Init()</code> on one line and register
+		handlers below it. That opens the channel before anything is listening, and the
+		backlog lands in the 10 second replay window instead of going straight to your
+		handlers.
+	</p>
+</div>
+
+<p>Read more in <a href="../guide/startup.html">Startup and Buffering</a>.</p>
+
+<h2>Rooms</h2>
+
+<p>
+	A room is a named list of players kept on this carrier, on the server. There is no
+	client side to it. Players who leave the game are taken out of every room for you.
+	Read more in <a href="../guide/rooms.html">Rooms</a>.
+</p>
+
+<h3>CreateRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:CreateRoom(RoomID: string, Members: {Player}) -> ()</code></pre>
+</div>
+
+<p>Makes a room and puts the listed players in it.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player}</code></td><td>The starting members. A list, or <code>nil</code> for an empty room.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local raid = Pigeon.new("Raid")
+
+raid:CreateRoom("Party1", { playerA, playerB })
+raid:CreateRoom("Lobby", {})   -- empty, and stays alive until you destroy it</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		This replaces the room if one already has that name, and it does not remove
+		duplicates. The same player listed twice is added twice and will get every room
+		message twice. <a href="#joinroom"><code>JoinRoom</code></a> does check, so
+		use that if you are not sure.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>DestroyRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:DestroyRoom(RoomID: string) -> ()</code></pre>
+</div>
+
+<p>
+	Deletes the room. The players are not told and nothing else about them changes. They
+	are simply not reachable through that name any more.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing. Destroying a room that does not exist does nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>raid:DestroyRoom("Party1")</code></pre>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>JoinRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:JoinRoom(RoomID: string, Members: {Player} | Player) -> ()</code></pre>
+</div>
+
+<p>
+	Adds players to a room. If the room does not exist it is made first, so you can skip
+	<code>CreateRoom</code> entirely.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player} | Player</code></td><td>One player or a list of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing. A player already in the room is not added again.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>Players.PlayerAdded:Connect(function(player)
+	raid:JoinRoom("Lobby", player)
+end)
+
+raid:JoinRoom("Party1", { playerA, playerB })</code></pre>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>LeaveRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:LeaveRoom(RoomID: string, Members: {Player} | Player) -> ()</code></pre>
+</div>
+
+<p>Takes players out of a room. The room stays, even if it is now empty.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player} | Player</code></td><td>One player or a list of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> nothing. Leaving a room that does not exist, or removing a
+	player who was never in it, does nothing.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>raid:LeaveRoom("Party1", playerB)</code></pre>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>SendToRoom <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:SendToRoom(Room: string, event: string, ...: any) -> ()</code></pre>
+</div>
+
+<p>
+	Fires an event at every member of a room. Note the parameter here is called
+	<code>Room</code>, not <code>RoomID</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Room</code></td><td><code>string</code></td><td>The room name.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on each member.</td></tr>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>The payload.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>raid:SendToRoom("Party1", "BossSpawned", bossId)</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Sending to a room that does not exist is not an error. Pigeon warns with
+		<code>ERR_NO_ROOM | Room '...' does not exist.</code> and drops the message. Watch
+		the output window if a room send seems to go nowhere.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h2>Access control</h2>
+
+<p>
+	A handshake closes a channel. Install a guard on the server and clients must pass it
+	before this carrier will carry anything for them, in either direction. Read more in
+	<a href="../guide/handshakes.html">Handshakes</a>.
+</p>
+
+<h3>UseHandshake <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:UseHandshake(Callback: (player: Player, ...any) -> boolean) -> ()</code></pre>
+</div>
+
+<p>
+	Closes the channel and puts your guard on the door. The guard gets the player and
+	whatever they passed to <a href="#handshake"><code>Handshake</code></a>,
+	and must return <code>true</code> to let them in. Anything else is a refusal.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Callback</code></td><td><code>(player: Player, ...any) -> boolean</code></td><td>Runs on every handshake attempt.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player) and token == tokenFor(player)
+end)
+
+-- Only players the guard admitted see this.
+mods:Broadcast("Alert", "someone was reported")</code></pre>
+</div>
+
+<p>What being closed means, exactly:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Direction</th><th>What happens to a client who has not passed</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Client to server</td><td>Everything they send on this carrier is dropped at the door, before any listener or incoming middleware runs. The handshake itself is the one packet that gets through.</td></tr>
+		<tr><td>Server to client</td><td>They are filtered out of every broadcast and every room send, and <code>CallTo</code> for them returns <code>nil</code> without sending.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h4>Rules to know</h4>
+
+<ul>
+	<li>The channel is closed the moment you install the guard. Nobody is in yet.</li>
+	<li>
+		Only one guard exists at a time. Installing another replaces it and closes the
+		channel again, because the clients already inside were judged by the old rules.
+		They are not told, so they have to handshake again.
+	</li>
+	<li>
+		The guard runs on every attempt and the latest answer wins. A later refusal takes
+		access away from a client that had it. That is how you revoke.
+	</li>
+	<li>
+		A guard that errors is caught. Pigeon warns and the client is told no. Access
+		that client already had is left as it was, because the guard never ruled.
+	</li>
+</ul>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A client can call <code>Handshake</code> as often as it likes, and your guard runs
+		every single time. Keep it cheap, and do not put a DataStore read in it without a
+		rate limit of your own.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>Handshake <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Handshake(...: any) -> boolean</code></pre>
+</div>
+
+<p>
+	Presents whatever the guard needs and waits for the ruling. On a carrier with no
+	guard on the server this returns <code>true</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>...</code></td><td><code>any</code></td><td>Passed straight to the server's guard, after the player.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> <code>true</code> if you may now use this carrier. Returns
+	<code>false</code> on a refusal, on a timeout, or if the carrier has been dropped.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+if mods:Handshake(myToken) then
+	mods:On("Alert", showAlert)
+	mods:Init()
+end</code></pre>
+</div>
+
+<p>
+	Retrying is fine and is the only way back in. Nothing tells you when the server
+	swaps its guard or takes your access away, so if a closed channel goes quiet, hand
+	your credentials over again.
+</p>
+
+<p>Errors with <code>ERR_NOT_CLIENT</code> if you call it on the server.</p>
+
+<h3>Approved <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Approved(Targets: {Player}?) -> {Player}</code></pre>
+</div>
+
+<p>
+	Narrows a list of players down to the ones this carrier will talk to. With no guard
+	installed that is everybody. With a guard it is the players it admitted.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Targets</code></td><td><code>{Player}?</code></td><td>The players to filter. Leave it out for everyone in the game.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> a list of players.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local watching = mods:Approved()
+print(#watching, "moderators are listening")
+
+-- Or check one player.
+local allowed = #mods:Approved({ player }) == 1</code></pre>
+</div>
+
+<p>
+	You rarely need this. Every broadcast from the server already runs its recipients
+	through it, and <code>CallTo</code> makes the same check for its one player. This is
+	for when you want the answer without sending anything.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Two small things the source does that may surprise you. When no guard is
+		installed, it hands back the very table you passed in rather than a copy, so do
+		not sort or edit the result in place unless you meant to. And unlike the other
+		server methods it does not check which machine it is on, so calling it on the
+		client returns the list unfiltered instead of erroring. Guards only exist on the
+		server, so the client answer means nothing.
+	</p>
+</div>
+
+<h3>Revoke <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Revoke(Targets: {Player} | Player) -> number</code></pre>
+</div>
+
+<p>
+	Takes admission away again. Each player you name is cleared from the carrier's
+	admission list, so the guard no longer counts them as let in, and they are dropped
+	from the subscriber list of every staged table this carrier holds.
+</p>
+
+<p>
+	If a player was subscribed to at least one staged table, Pigeon tells them which
+	ids they lost over a reserved <code>__pigeon_table_revoke</code> message. That one
+	goes straight down the transport instead of through
+	<a href="#broadcastto"><code>BroadcastTo</code></a>, because the player has just
+	stopped being approved and a broadcast would filter them out. On their machine each
+	named mirror is dropped from the cache, its release hook is cleared so it does not
+	send the server a release for something the server already did, and it is marked
+	released.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Targets</code></td><td><code>{Player} | Player</code></td><td>One player or a list of them.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> how many of the players you named had actually been
+	admitted. A player the guard never let in, and a player you revoked already, both
+	count as zero. On a dropped carrier it returns <code>0</code> and does nothing.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player) and token == tokenFor(player)
+end)
+
+-- They lost the role, so shut the channel on them.
+print(mods:Revoke(player))  --> 1
+
+-- Nothing left to take the second time.
+print(mods:Revoke(player))  --> 0</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local match = Pigeon.new("Match")
+
+-- A list works the same way, and the count tells you how many were still in.
+local removed = match:Revoke(round.eliminated)
+print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></pre>
+</div>
+
+<h4>What it changes</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>For a revoked player</th><th>What is true afterwards</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Server to them</td>
+			<td><a href="#approved"><code>Approved</code></a> leaves them out, so <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code> and <code>SendToRoom</code> all skip them, and <code>CallTo</code> refuses them.</td>
+		</tr>
+		<tr>
+			<td>Them to the server</td>
+			<td>Anything they send on this carrier is dropped at the door, before any listener or incoming middleware runs.</td>
+		</tr>
+		<tr>
+			<td>Staged tables</td>
+			<td>Every mirror they held from this carrier stops updating and is marked released. What they already received stays in their memory.</td>
+		</tr>
+		<tr>
+			<td>Rooms</td>
+			<td>Left alone on purpose. They stay in every room they were in and simply hear nothing, because the guard filters them out of the send.</td>
+		</tr>
+		<tr>
+			<td>Getting back in</td>
+			<td>They can call <a href="#handshake"><code>Handshake</code></a> again and be judged afresh, then ask for the staged table again, which re-fetches it.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Revoking only blocks sending when a guard is installed, because
+		<code>Approved</code> only filters when there is one. On a carrier with no
+		<a href="#usehandshake"><code>UseHandshake</code></a>, <code>Revoke</code> still
+		releases their staged tables, but broadcasts keep reaching them and their
+		messages keep arriving. Install a guard first, or this call does half of what
+		you think.
+	</p>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Revoking cuts off the future. It cannot undo the past. Every message and every
+		table snapshot they already received is on their machine and stays there, so do
+		not treat <code>Revoke</code> as a way to make sent data secret again.
+	</p>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		This is not a ban and nothing about it is permanent. The guard is what decides,
+		every time, and it runs again the moment the client hands its credentials over.
+		If you want them out for good, make the guard say no.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h2>Middleware</h2>
+
+<p>
+	Middleware sees the messages on this carrier and may rewrite the event name and the
+	arguments. Entries run in the order you add them. Read more in
+	<a href="../guide/middleware.html">Middleware</a>.
+</p>
+
+<div class="api">
+	<pre class="api__sig"><code>type MiddlewareFunction = (direction: string, event: string, args: {any}, player: Player?) -> (string?, {any}?)</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Argument</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>direction</code></td><td>The string <code>"incoming"</code> or <code>"outgoing"</code>.</td></tr>
+		<tr><td><code>event</code></td><td>The event name as it stands after the entries before you.</td></tr>
+		<tr><td><code>args</code></td><td>A list of the arguments. It is already a copy, so editing it in place is safe.</td></tr>
+		<tr><td><code>player</code></td><td>The other side, on the server. See the table below.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Return nothing to leave the message alone. Return a string to rename the event.
+	Return a table as the second value to replace the arguments. You can do just one:
+	<code>return nil, args</code> replaces only the arguments.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Where</th><th>What <code>player</code> is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Incoming, on the server</td><td>The player who sent it.</td></tr>
+		<tr><td>Incoming, on the client</td><td><code>nil</code>.</td></tr>
+		<tr><td>Outgoing, from <code>CallTo</code></td><td>The player being asked.</td></tr>
+		<tr><td>Outgoing, from anything else</td><td><code>nil</code>, including server broadcasts.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Middleware cannot cancel a message. There is no return value that means "stop".
+		Incoming middleware can drop one in practice by renaming the event to something
+		nothing listens for, since a message with no listener is discarded. Outgoing
+		middleware cannot: the packet still leaves this machine, it just arrives under a
+		different name.
+	</p>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Middleware also sees the reserved <code>__pigeon_</code> events, so a logger will
+		print pings, handshakes and staged table traffic alongside your own. Filter on the
+		event name if you do not want them.
+	</p>
+	<p>
+		One more detail on <code>args</code>. The number of arguments delivered is the
+		larger of the count that came in and the length of your list, so appending works
+		as you expect but removing entries does not shorten the call. Anything you took
+		off the end arrives as <code>nil</code>.
+	</p>
+</div>
+
+<h3>UseIncoming <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:UseIncoming(Callback: MiddlewareFunction) -> ()</code></pre>
+</div>
+
+<p>
+	Adds middleware to the inbound path. It runs after the handshake check and before
+	any listener. It only runs for events this carrier already has an <code>On</code>
+	for. A message for an event with no listener never reaches it.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Callback</code></td><td><code>MiddlewareFunction</code></td><td>Runs for every message arriving on this carrier.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>shop:UseIncoming(function(direction, event, args, player)
+	print(player.Name, "sent", event)
+
+	if event == "Buy" and type(args[1]) ~= "string" then
+		-- Nobody listens to this, so the message stops here.
+		return "__dropped"
+	end
+end)</code></pre>
+</div>
+
+<h3>UseOutgoing <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:UseOutgoing(Callback: MiddlewareFunction) -> ()</code></pre>
+</div>
+
+<p>
+	Adds middleware to the outbound path. It runs once per send, just before the message
+	leaves this machine, not once per recipient.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Callback</code></td><td><code>MiddlewareFunction</code></td><td>Runs for every message leaving this carrier.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<pre><code>shop:UseOutgoing(function(direction, event, args, player)
+	args[#args + 1] = os.clock()  -- stamp everything we send
+	return nil, args
+end)</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		If a middleware function errors, Pigeon warns and skips that one entry. The
+		message carries on down the chain unchanged by it.
+	</p>
+</div>
+
+<h2>Staged tables</h2>
+
+<p>
+	A staged table is a plain data table whose writes replicate to the clients holding
+	it. The carrier is how one is published and requested. Make one with
+	<a href="pigeon.html"><code>Pigeon.StagedTable</code></a> and read
+	<a href="staged-table.html">StagedTable</a> for what you can do with the object
+	itself.
+</p>
+
+<h3>CaptureTable <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:CaptureTable(id: string, Table: StageTable) -> ()</code></pre>
+</div>
+
+<p>
+	Publishes a staged table under an id so clients may ask for it, and starts sending
+	its changes to whoever holds it.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>id</code></td><td><code>string</code></td><td>The id clients will request.</td></tr>
+		<tr><td><code>Table</code></td><td><code>StageTable</code></td><td>The staged table to publish.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local world = Pigeon.new("World")
+local state = Pigeon.StagedTable({ round = 1, phase = "warmup" })
+
+world:CaptureTable("WorldState", state)
+
+-- Both writes land in one patch, not two.
+local t = state:GetTable()
+t.round = 2
+t.phase = "fighting"</code></pre>
+</div>
+
+<p>
+	Writes made in the same frame are batched into a single message. Filling a table
+	field by field costs one send, not one per field.
+</p>
+
+<p>
+	Capturing publishes the table but sends nothing yet. Clients get it by calling
+	<a href="#requesttable"><code>RequestTable</code></a>, or you push it at
+	them with <a href="#forcetable"><code>ForceTable</code></a>.
+</p>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		Give a staged table one id. Capturing the same table under a second id replaces
+		its write hook, so patches then go out under the newer id only and anyone holding
+		the older one stops seeing changes.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>ReleaseTable <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:ReleaseTable(id: string) -> ()</code></pre>
+</div>
+
+<p>Drops this carrier's pointer to a staged table.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>id</code></td><td><code>string</code></td><td>The published id to stop pointing at.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>world:ReleaseTable("WorldState")
+
+-- A client asking for it now is refused.</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Careful</p>
+	<p>
+		This does not stop replication. Clients already holding the table keep getting
+		every write. All you have done is make the id unrequestable through this carrier.
+		To stop a client receiving, call <code>Release</code> on the mirror from that
+		client.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>ForceTable <span class="badge badge--server">Server</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:ForceTable(id: string, Table: StageTable, Targets: ({Player} | Player)?) -> ()</code></pre>
+</div>
+
+<p>
+	Pushes a staged table onto clients without waiting for them to ask. If the id is not
+	published yet, this captures it first.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>id</code></td><td><code>string</code></td><td>The id to publish it under.</td></tr>
+		<tr><td><code>Table</code></td><td><code>StageTable</code></td><td>The staged table to send.</td></tr>
+		<tr><td><code>Targets</code></td><td><code>({Player} | Player)?</code></td><td>Who to send it to. Leave it out for everyone.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> nothing.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>Players.PlayerAdded:Connect(function(player)
+	local profile = Pigeon.StagedTable(loadProfile(player))
+	world:ForceTable("Profile_" .. player.UserId, profile, player)
+end)</code></pre>
+</div>
+
+<p>
+	The recipients get it cached under that id, so a later
+	<code>RequestTable</code> on their side hands it back with no round trip.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Capture guards are not consulted here. They exist to vet clients asking for a
+		table, and this is the server deciding. A handshake guard still applies, though:
+		a player who has not passed it is recorded as holding the table but never receives
+		the copy or the patches.
+	</p>
+</div>
+
+<p>Errors with <code>ERR_NOT_SERVER</code> if you call it on the client.</p>
+
+<h3>RequestTable <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:RequestTable(id: string) -> StageTable</code></pre>
+</div>
+
+<p>
+	Asks the server for a staged table and waits for the first copy. After that it is
+	kept up to date for you, as long as the channel is open.
+</p>
+
+<p>
+	The first copy comes back as a reply, so this works without
+	<a href="#init"><code>Init</code></a>. The patches that follow are ordinary server
+	sends, and those are held until the channel is open. Call <code>Init</code> or the
+	mirror never changes again.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>id</code></td><td><code>string</code></td><td>The published id to ask for.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> the live mirror. Ask twice and you get the same object back,
+	with no second round trip and no yield.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local world = Pigeon.new("World")
+world:Init()
+
+local state = world:RequestTable("WorldState")
+print(state:GetTable().round)</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		This one throws. If the server has nothing under that id, or a capture guard said
+		no, or the request timed out, you get
+		<code>ERR_CAPTURE_DENIED | Capture of table '...' was denied.</code> A timeout
+		looks the same as a refusal, so wrap it in <code>pcall</code> if the table may not
+		be there yet.
+	</p>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ok, state = pcall(function()
+	return world:RequestTable("WorldState")
+end)
+
+if not ok then
+	warn("no world state yet")
+end</code></pre>
+</div>
+
+<p>
+	The mirror belongs to the server. Writing to it locally changes your copy and is
+	never sent back. Call <code>Release</code> on it to stop receiving updates and to
+	drop it from the cache, after which a later request fetches it again.
+</p>
+
+<p>Errors with <code>ERR_NOT_CLIENT</code> if you call it on the server.</p>
+
+<h2>Lifecycle</h2>
+
+<h3>Destroy <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:Destroy() -> ()</code></pre>
+</div>
+
+<p>
+	Drops the carrier. Every subscription it made is disconnected, and its listeners,
+	rooms, middleware, handshake guard and table pointers are cleared.
+</p>
+
+<p><strong>Returns</strong> nothing. Calling it twice does nothing the second time.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local minigame = Pigeon.new("Minigame")
+
+-- ... the round ends ...
+
+minigame:Destroy()</code></pre>
+</div>
+
+<h4>What a dropped carrier does</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Call</th><th>What you get</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Emit</code>, <code>Broadcast</code> and friends</td><td>Nothing happens. No error.</td></tr>
+		<tr><td><code>Call</code>, <code>CallTo</code></td><td><code>nil</code>, straight away.</td></tr>
+		<tr><td><code>Handshake</code></td><td><code>false</code>.</td></tr>
+		<tr><td><code>Init</code></td><td>Nothing happens.</td></tr>
+		<tr><td>Anything on the wrong side</td><td>Still errors. The side check runs first.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Going quiet rather than erroring is on purpose. Teardown often races with work
+	already in flight, and throwing there would spread the problem.
+</p>
+
+<h4>Who else is affected</h4>
+
+<ul>
+	<li>
+		If the carrier made its own transformer, which it does unless you passed one in,
+		that transformer is destroyed too.
+	</li>
+	<li>
+		If you passed a transformer in, it is left alone. It is yours.
+	</li>
+	<li>
+		Destroying a transformer runs this on every carrier riding on it, so a carrier
+		never outlives its transformer.
+	</li>
+	<li>
+		The cached carrier for this name is evicted, so a later
+		<code>Pigeon.new("Minigame")</code> builds a fresh one rather than handing back a
+		dead object.
+	</li>
+	<li>
+		Staged tables survive. Only this carrier's hold on them is released, and on the
+		server replication from them stops. The same table can be captured again by
+		another carrier.
+	</li>
+</ul>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Do not reuse a carrier after destroying it. Sending is properly dead, but calling
+		<code>On</code> again is not the no-op you would expect: if you supplied the
+		transformer and it is still alive, the listener really does subscribe and really
+		will fire, on an object you think is gone. Get a new carrier instead.
+	</p>
+</div>
+
+<p>Read more in <a href="../guide/cleanup.html">Cleanup</a>.</p>
+
+<h2>Errors and warnings</h2>
+
+<p>
+	Errors are raised at your call site. Warnings go to the output window and the message
+	is dropped or the callback skipped.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Message</th><th>Kind</th><th>When</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>ERR_NOT_SERVER | This function is only available on the server.</code></td>
+			<td>Error</td>
+			<td>
+				<code>Broadcast</code>, <code>BroadcastTo</code>,
+				<code>BroadcastExcept</code>, <code>CallTo</code>, <code>CreateRoom</code>,
+				<code>DestroyRoom</code>, <code>JoinRoom</code>, <code>LeaveRoom</code>,
+				<code>SendToRoom</code>, <code>UseHandshake</code>,
+				<code>CaptureTable</code>, <code>ReleaseTable</code> or
+				<code>ForceTable</code> called on the client.
+			</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NOT_CLIENT | This function is only available on the client.</code></td>
+			<td>Error</td>
+			<td>
+				<code>Emit</code>, <code>Call</code>, <code>Ping</code>,
+				<code>Handshake</code> or <code>RequestTable</code> called on the server.
+			</td>
+		</tr>
+		<tr>
+			<td><code>ERR_CAPTURE_DENIED | Capture of table '...' was denied.</code></td>
+			<td>Error</td>
+			<td><code>RequestTable</code> was refused, found nothing, or timed out.</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NO_NAME | A carrier must be given a name.</code></td>
+			<td>Error</td>
+			<td>The carrier was created with no name, or an empty string.</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NO_TRANSFORMER | options.Transformer must be a transformer.</code></td>
+			<td>Error</td>
+			<td>The carrier was created with an <code>options.Transformer</code> that is not one.</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NO_ROOM | Room '...' does not exist.</code></td>
+			<td>Warning</td>
+			<td><code>SendToRoom</code> was given a room name nothing was created under.</td>
+		</tr>
+		<tr>
+			<td><code>ERR_NO_TABLE | No staged table captured under id '...'.</code></td>
+			<td>Warning</td>
+			<td>On the server, when a client requests an id that is not published.</td>
+		</tr>
+		<tr>
+			<td><code>ERR_CALLBACK_ERROR | Error in ... callback for event '...': ...</code></td>
+			<td>Warning</td>
+			<td>A listener, a middleware function or a handshake guard errored.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>See also</h2>
+
+<ul>
+	<li><a href="pigeon.html">Pigeon module</a> for how a carrier is created and cached.</li>
+	<li><a href="transformer.html">Transformer</a> for sharing one remote between channels.</li>
+	<li><a href="staged-table.html">StagedTable</a> for the replicated table object.</li>
+	<li><a href="types.html">Types</a> for the exported Luau types.</li>
+	<li><a href="../guide/carriers.html">Carriers</a> for the guided version of this page.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

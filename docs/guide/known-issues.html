@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Known Issues | Pigeon</title>
+<meta name="description" content="The confirmed bugs in Pigeon, why each one happens, and what to write instead until they are fixed.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Known Issues</h1>
+
+<p class="lead">
+	Two bugs are confirmed in the current code. Each one is listed here with what
+	causes it and what to write instead. Both have a workaround you can use today.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Issue</th><th>Affects</th><th>Short answer</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>An argument list stops at the first <code>nil</code></td>
+			<td>Both directions</td>
+			<td>Do not send <code>nil</code>.</td>
+		</tr>
+		<tr>
+			<td>A nested view you hold goes stale</td>
+			<td>Client, staged tables</td>
+			<td>Read down from the top view each time.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>1. An argument list stops at the first nil</h2>
+
+<p>
+	Send a <code>nil</code> in the middle of an argument list and everything from that
+	point on is lost. The far side gets only the arguments before it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local echo = Pigeon.new("Echo")
+
+echo:Emit("Values", 1, nil, 3)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local echo = Pigeon.new("Echo")
+
+echo:On("Values", function(player, ...)
+	print(select("#", ...))  --&gt; 1
+	print(...)               --&gt; 1
+end)</code></pre>
+</div>
+
+<p>
+	A trailing <code>nil</code> goes the same way. <code>Emit("Values", "a", nil)</code>
+	arrives as one argument, not two.
+</p>
+
+<h4>Why it happens</h4>
+
+<p>
+	Pigeon packs your arguments into one table and puts the count beside them under the
+	key <code>n</code>. That table has number keys and one string key, and Roblox strips
+	the string key when it sends the table across. With <code>n</code> gone the receiving
+	side falls back to the length of the list, and a list with a gap in it is only as
+	long as its first gap.
+</p>
+
+<h4>What to do instead</h4>
+
+<p>Pick whichever of these fits. All three work today.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- 1. Send a stand-in value rather than nil.
+echo:Emit("Values", 1, false, 3)
+
+-- 2. Send a sentinel you agree on, if false is a real value for you.
+local NONE = "\0none"
+echo:Emit("Values", 1, NONE, 3)
+
+-- 3. Wrap the arguments in one table with named keys.
+echo:Emit("Values", { first = 1, third = 3 })</code></pre>
+</div>
+
+<p>
+	The third one is the tidiest. A key you leave out is not a gap in a list, and reading
+	it back on the far side gives you <code>nil</code> anyway.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		This applies both ways. Client to server and server to client build the argument
+		table with the same code, so both truncate. Replies are packed the same way, so a
+		listener that returns <code>1, nil, 3</code> answers a <code>Call</code> with just
+		<code>1</code>.
+	</p>
+</div>
+
+<h2>2. A nested view does not follow its table being replaced</h2>
+
+<p>
+	On the client, a staged table gives you a view. Read a nested table out of it, hold on
+	to that, and it stops updating the moment the server replaces the whole table under it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local data = Pigeon.new("PlayerData"):Init()
+local view = data:RequestTable("me"):GetTable()
+
+local stats = view.stats
+print(stats.health)   --&gt; 100
+
+-- The server replaces the whole stats table with a new one.
+
+print(stats.health)   --&gt; still 100</code></pre>
+</div>
+
+<h4>Why it happens</h4>
+
+<p>
+	A server update is written straight into the data underneath the view. The nested view
+	you are holding still points at the old table, and nothing tells it to look again.
+	Nested views are cached by key and the cache is weak, so one you do not hold on to is
+	thrown away and rebuilt from the current data. One you hold stays alive, old contents
+	and all.
+</p>
+
+<h4>What to do instead</h4>
+
+<p>Read down from the top level view each time, and do not keep the middle of the path.</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- Do this.
+print(view.stats.health)
+
+-- Not this.
+local stats = view.stats
+print(stats.health)</code></pre>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		While you are still holding <code>stats</code>, even <code>view.stats.health</code>
+		hands you the stale one, because that is the view the cache is holding. Let the
+		local go and the next read builds a fresh one.
+	</p>
+</div>
+
+<p>
+	This only bites on the receiving side. A write made through the view on the server
+	drops the cached nested view for that key as part of the write, so the server's own
+	reads are always current.
+</p>
+
+<h2>Not bugs, but worth knowing</h2>
+
+<p>
+	Four more things catch people out. Each one is the code doing what it was written to do.
+</p>
+
+<h3>Approved on a destroyed carrier returns everyone</h3>
+
+<p>
+	<code>Destroy</code> clears the handshake guard along with everything else, and
+	<a href="../api/carrier.html#approved">Approved</a> returns every candidate when there
+	is no guard. So a destroyed guarded carrier answers with the full list.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local mods = Pigeon.new("Moderation")
+
+mods:UseHandshake(function(player, token)
+	return isModerator(player, token)
+end)
+
+-- Once the moderators have handshaked.
+print(#mods:Approved())   --&gt; only the moderators
+
+mods:Destroy()
+print(#mods:Approved())   --&gt; everyone in the server</code></pre>
+</div>
+
+<p>
+	Nothing leaks from this on its own, because a destroyed carrier cannot send. It matters
+	if you use <code>Approved</code> to decide something other than a send. Check the list
+	before you destroy the carrier, not after.
+</p>
+
+<h3>Two carriers on one name can hide events from each other's middleware</h3>
+
+<p>
+	Incoming middleware sees every packet on its channel, except one: an event that a
+	<em>different</em> carrier on the same name has bound with <code>On</code>. The
+	listener claims that packet, so the other carrier's chain never gets a look at it.
+</p>
+
+<pre><code>-- Both are on the "Chat" channel.
+local a = Pigeon.new("Chat")
+local b = Pigeon.new("Chat", { Timeout = 5 })
+
+a:On("Message", handleMessage)
+
+b:UseIncoming(function(direction, event, args)
+	print(event)   -- never prints "Message"
+end)</code></pre>
+
+<p>
+	Keep the receiving side to one carrier per name and this cannot arise. Passing any
+	options builds a fresh uncached carrier, which is the usual way to end up with two by
+	accident. See <a href="carriers.html">Carriers</a> and
+	<a href="middleware.html">Middleware</a>.
+</p>
+
+<h3>A handshake guard can be replaced but not removed</h3>
+
+<p>
+	<code>UseHandshake</code> is the only way to set a guard, and there is no matching call
+	to take one off. Installing a second guard replaces the first and closes the channel
+	again, so everyone has to handshake once more.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>-- The nearest thing to removing a guard: one that admits anyone who asks.
+mods:UseHandshake(function()
+	return true
+end)</code></pre>
+</div>
+
+<p>
+	Clients are not told when the guard changes. They find out by calling
+	<code>Handshake</code> again, and until they do the channel carries nothing for them.
+	See <a href="handshakes.html">Handshakes</a>.
+</p>
+
+<h3>Only the last carrier to capture a staged table replicates it</h3>
+
+<p>
+	A staged table holds one hook for reporting its writes. Capturing the same table on a
+	second carrier replaces the first carrier's hook, so patches go out on the second
+	carrier's channel from then on. Clients that took the table through the first carrier
+	stop seeing updates.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local scores = Pigeon.StagedTable({ red = 0 })
+
+local lobby = Pigeon.new("Lobby")
+local match = Pigeon.new("Match")
+
+lobby:CaptureTable("scores", scores)
+match:CaptureTable("scores", scores)   -- lobby stops replicating it</code></pre>
+</div>
+
+<p>
+	Capture each staged table on one carrier and leave it there. See
+	<a href="staged-tables.html">Staged Tables</a>.
+</p>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="staged-tables.html">Staged Tables</a> for views, patches and capture.</li>
+	<li><a href="cleanup.html">Cleanup</a> for destroying carriers properly.</li>
+	<li><a href="sending.html">Sending and Receiving</a> for how arguments are packed.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Credits | Pigeon</title>
+<meta name="description" content="Pigeon is heavily inspired by roblox-sockets by OMouta. Credits, what Pigeon adds, and the licence.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Credits</h1>
+
+<p class="lead">
+	Pigeon is heavily inspired by
+	<a href="https://github.com/OMouta/roblox-sockets">roblox-sockets</a> by OMouta. If you
+	have not seen it, go and look at it.
+</p>
+
+<h2>roblox-sockets</h2>
+
+<p>
+	roblox-sockets brought the socket style to Roblox networking. You name an event, you
+	listen for it with <code>On</code>, you raise it with <code>Emit</code>, and the
+	RemoteEvents stay out of your way. Pigeon's whole shape comes from that idea.
+</p>
+
+<p>These are the parts Pigeon took from it:</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Idea</th><th>Where it shows up in Pigeon</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Named events with <code>On</code> and <code>Emit</code></td>
+			<td><a href="sending.html">Sending and Receiving</a></td>
+		</tr>
+		<tr>
+			<td>Rooms</td>
+			<td><a href="rooms.html">Rooms</a></td>
+		</tr>
+		<tr>
+			<td>Middleware on the way in and the way out</td>
+			<td><a href="middleware.html">Middleware</a></td>
+		</tr>
+		<tr>
+			<td>Request and response with a timeout</td>
+			<td><a href="requests.html">Requests and Replies</a></td>
+		</tr>
+		<tr>
+			<td>An unreliable mode for cheap, lossy sends</td>
+			<td><a href="unreliable.html">Unreliable Sending</a></td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	The shape carried over, not the method names. In Pigeon <code>Emit</code> is client
+	to server only; the server raises an event with <code>Broadcast</code>,
+	<code>BroadcastTo</code> or <code>BroadcastExcept</code>.
+</p>
+
+<p>
+	If that list is everything your game needs, roblox-sockets may well be the better fit.
+	It is a good library and it got there first.
+</p>
+
+<h2>What Pigeon adds</h2>
+
+<p>
+	Pigeon grew out of wanting a few more things on top. These are the parts that are its
+	own.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Addition</th><th>What it is for</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><a href="ref-pool.html">A shared hashed remote pool</a></td>
+			<td>Channels share a pool of RemoteEvents. It grows by one per sixteen transformers and stops at thirty-two.</td>
+		</tr>
+		<tr>
+			<td><a href="startup.html">Per channel readiness and buffering</a></td>
+			<td>The server holds a channel's messages until that client says it is listening.</td>
+		</tr>
+		<tr>
+			<td><a href="handshakes.html">Handshake locked channels</a></td>
+			<td>A channel that carries nothing for a client the server has not approved.</td>
+		</tr>
+		<tr>
+			<td><a href="staged-tables.html">Staged tables</a></td>
+			<td>A table whose writes replicate to the clients holding it.</td>
+		</tr>
+		<tr>
+			<td><a href="transformers.html">Transformer based group teardown</a></td>
+			<td>One call drops a whole group of channels and every listener on them.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>Licence</h2>
+
+<p>
+	Pigeon is released under the MIT licence, copyright 2026 Gage Ruben. Use it, change
+	it, ship it in a paid game. Keep the copyright notice and the permission notice with
+	the code and you are fine.
+</p>
+
+<p>
+	Roblox and Luau are trademarks of Roblox Corporation. Pigeon is an independent project
+	and is not made by or endorsed by them.
+</p>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

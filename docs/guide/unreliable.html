@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unreliable Sending | Pigeon</title>
+<meta name="description" content="An unreliable carrier sends fire and forget messages on a cheaper lane that may drop or reorder them.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Unreliable Sending</h1>
+
+<p class="lead">
+	A carrier can send on a cheaper lane that does not promise delivery or order. It is
+	for things you send constantly and can afford to lose, like positions and visual
+	effects.
+</p>
+
+<h2>Turning it on</h2>
+
+<p>Pass one option when you build the carrier.</p>
+
+<pre><code>local positions = Pigeon.new("Positions", { Unreliable = true })</code></pre>
+
+<p>
+	That is the whole switch. Every fire and forget send on this carrier now takes the
+	unreliable lane. Fire and forget means you send and move on, with no reply and no
+	confirmation.
+</p>
+
+<h3 id="unreliable-field">carrier.Unreliable <span class="badge badge--shared">Shared</span></h3>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier.Unreliable: boolean</code></pre>
+</div>
+
+<p>
+	The option is stored on the carrier as a plain field. It is <code>true</code> only if
+	you passed <code>Unreliable = true</code>, and <code>false</code> otherwise, including
+	when you pass no options at all.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Value</th><th>What sends do</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>false</code></td><td>Everything takes the reliable lane. This is the default.</td></tr>
+		<tr><td><code>true</code></td><td>Fire and forget sends take the unreliable lane. Requests and replies still take the reliable one.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<pre><code>local reliable = Pigeon.new("Chat")
+print(reliable.Unreliable)    --> false
+
+local positions = Pigeon.new("Positions", { Unreliable = true })
+print(positions.Unreliable)   --> true</code></pre>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Passing any options table makes a fresh carrier that Pigeon does not cache.
+		Calling <code>Pigeon.new("Positions")</code> somewhere else gives you a
+		different, reliable carrier on the same channel name. Both hear the same
+		packets, so both sets of listeners fire. Hold on to the one you built and pass
+		it around. See <a href="carriers.html">Carriers</a>.
+	</p>
+</div>
+
+<h2>What unreliable actually means</h2>
+
+<p>
+	Underneath, Pigeon keeps two remotes for every bucket in its pool: a normal
+	<code>RemoteEvent</code> and an <code>UnreliableRemoteEvent</code> twin. The
+	unreliable one is cheaper to send on, and Roblox gives you nothing in return.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th></th><th>Reliable</th><th>Unreliable</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Arrives</td><td>Always</td><td>Usually. Some are lost.</td></tr>
+		<tr><td>Order</td><td>Same order you sent them</td><td>Any order</td></tr>
+		<tr><td>Cost</td><td>Higher</td><td>Lower</td></tr>
+		<tr><td>Held for a client that is not ready</td><td>Yes, up to 64 for 30 seconds</td><td>No, dropped</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	So an unreliable message can vanish, and two sent a frame apart can arrive the wrong
+	way round. Your handler has to be fine with both.
+</p>
+
+<h2>Only fire and forget uses the lane</h2>
+
+<p>
+	Requests never go unreliable, no matter what the carrier says. A request is a
+	question that yields until it gets an answer, and dropping either half would leave a
+	thread waiting for nothing.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Method</th><th>Lane on an unreliable carrier</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Emit</code></td><td>Unreliable</td></tr>
+		<tr><td><code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code></td><td>Unreliable</td></tr>
+		<tr><td><code>SendToRoom</code></td><td>Unreliable</td></tr>
+		<tr><td><code>Call</code></td><td>Reliable, always</td></tr>
+		<tr><td><code>CallTo</code></td><td>Reliable, always</td></tr>
+		<tr><td>The reply a listener returns</td><td>Reliable, always</td></tr>
+		<tr><td><code>Ping</code>, <code>Handshake</code>, <code>RequestTable</code></td><td>Reliable, because each is a <code>Call</code> underneath</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	A reply is never held back either. The far side is already yielded on it, so it is
+	provably listening, and holding it would strand that thread until its timeout.
+	See <a href="requests.html">Requests and Replies</a>.
+</p>
+
+<h2>Nothing is queued for a client that has not called Init</h2>
+
+<p>
+	On a normal carrier, the server holds messages for a client until that client calls
+	<code>Init()</code> on the channel. Up to 64 per channel, for 30 seconds. That is
+	what stops a broadcast landing before the client has registered its handlers.
+	See <a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<p>Unreliable messages are not held. They are thrown away.</p>
+
+<div class="flow">
+	<p class="flow__label">Server sends to a client that has not called Init</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">reliable</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">queued</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">delivered on Init</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">unreliable</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">dropped</span>
+	</div>
+</div>
+
+<p>
+	That is the right call. You already told Pigeon this message may be lost in transit.
+	A message that can be lost has no business being kept in a queue and replayed
+	seconds later, when it is stale and the player has moved on. Holding a position from
+	thirty seconds ago and delivering it as if it were current would be worse than
+	losing it.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		The client still has to call <code>Init()</code>. Until it does, an unreliable
+		carrier receives nothing at all from the server, and unlike a reliable one it
+		gets no backlog once it does. Call <code>Init()</code> as soon as your handlers
+		are set up.
+	</p>
+</div>
+
+<h2>Sending from the client can fall back</h2>
+
+<p>
+	Sending from the client never needs <code>Init</code>. But the unreliable remotes
+	have to replicate down from the server before the client can use them, and that
+	takes a moment after joining.
+</p>
+
+<p>
+	If the client calls <code>Emit</code> on an unreliable carrier before the twin has
+	arrived, Pigeon does not drop the message. It sends it on the reliable remote instead.
+	If neither remote has arrived, the message waits in the client's outbox and goes out
+	as soon as one of them does. So your first few sends after joining may be reliable
+	ones. Nothing breaks, and it settles by itself.
+</p>
+
+<h2>A position streaming example</h2>
+
+<p>
+	Every heartbeat the server sends everyone's position to everyone. Losing a frame
+	does not matter, because another one is a sixtieth of a second behind it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local positions = Pigeon.new("Positions", { Unreliable = true })
+
+RunService.Heartbeat:Connect(function()
+	local snapshot = {}
+
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local root = character and character.PrimaryPart
+		if root then
+			-- String keys, because a table of positions is not a plain array.
+			snapshot[tostring(player.UserId)] = root.Position
+		end
+	end
+
+	positions:Broadcast("Update", snapshot)
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Pigeon = require(ReplicatedStorage.Pigeon)
+
+local positions = Pigeon.new("Positions", { Unreliable = true })
+
+positions:On("Update", function(snapshot)
+	for userId, position in snapshot do
+		moveGhost(userId, position)
+	end
+end)
+
+-- Without this the server sends nothing, and nothing is kept for later.
+positions:Init()</code></pre>
+</div>
+
+<p>
+	Each message carries the whole picture rather than a change to it. That is the
+	pattern that survives a lossy lane: if one goes missing, the next one still tells the
+	client everything it needs. A message that said "move player 5 forward by 2 studs"
+	would leave the client permanently wrong the first time one was dropped.
+</p>
+
+<p>
+	The client passes <code>{ Unreliable = true }</code> too, but only because this
+	carrier might send as well. Receiving works either way. The flag only ever affects
+	the sends that carrier makes.
+</p>
+
+<h2>What to use it for</h2>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Good fit</th><th>Bad fit</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Character and vehicle positions</td><td>Currency and inventory changes</td></tr>
+		<tr><td>Aim direction and look vectors</td><td>Purchases and trades</td></tr>
+		<tr><td>Cosmetic effects and hit sparks</td><td>Quest progress and unlocks</td></tr>
+		<tr><td>Live meters that refresh constantly</td><td>Anything the player would notice missing</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>The test is simple. If losing one message leaves the game in a wrong state that never fixes itself, use a reliable carrier.</p>
+
+<h2>Staged tables on an unreliable carrier</h2>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Do not capture a staged table on an unreliable carrier. Staged tables replicate
+		their writes as fire and forget broadcasts, so on an unreliable carrier those
+		patches take the lossy lane. A dropped patch is never resent, and the client's
+		copy is wrong from then on. Keep staged tables on a reliable carrier. See
+		<a href="staged-tables.html">Staged Tables</a>.
+	</p>
+</div>
+
+<h2>Switching at runtime</h2>
+
+<p>
+	<code>Unreliable</code> is a plain field on the carrier and it is read at the moment
+	you send. You can flip it.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local carrier = Pigeon.new("Effects", { Unreliable = true })
+
+local payload = { round = 2 }
+
+carrier.Unreliable = false
+carrier:Broadcast("Important", payload)   -- reliable
+carrier.Unreliable = true</code></pre>
+</div>
+
+<p>
+	This is worth knowing but it is not a habit to get into. If a channel has both kinds
+	of traffic on it, two carriers with two names is clearer than one you keep toggling,
+	and it cannot be got wrong by a race.
+</p>
+
+<h2>Write handlers that do not mind repeats</h2>
+
+<p>
+	This lane can drop a message and it can deliver messages out of order. Write your
+	handlers so that neither one leaves the game in a wrong state.
+</p>
+
+<p>
+	The rule is to send what a value <em>is</em>, not how to change it. A message that
+	sets a number is safe to miss, because the next one corrects it. A message that
+	adds to a number is not, because a missed one is gone and a repeated one counts
+	twice.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- Fragile. A dropped or repeated message leaves the wrong number.
+positions:On("Hit", function(amount)
+	health -= amount
+end)
+
+-- Fine. Every message says what the value is now.
+positions:On("Health", function(value)
+	health = value
+end)</code></pre>
+</div>
+
+<p>
+	If something really has to be counted, number it yourself and ignore anything you
+	have already seen. That also throws away messages that arrive out of order.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local lastSeen = 0
+
+positions:On("Tick", function(index, payload)
+	if index &lt;= lastSeen then
+		return
+	end
+	lastSeen = index
+	apply(payload)
+end)</code></pre>
+</div>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Anything that must arrive exactly once does not belong on this lane at all. Put
+		it on a normal carrier instead.
+	</p>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="startup.html">Startup and Buffering</a> for what <code>Init</code> does and why it matters more here.</li>
+	<li><a href="ref-pool.html">The Ref Pool</a> for where the unreliable twins come from.</li>
+	<li><a href="sending.html">Sending and Receiving</a> for the methods themselves.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transformers | Pigeon</title>
+<meta name="description" content="A transformer picks which pooled RemoteEvent a carrier sends on, and it is the switch that turns a group of channels off.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Transformers</h1>
+
+<p class="lead">
+	A transformer decides which pooled RemoteEvent a carrier's traffic goes out on.
+	Every carrier already has one, so most games never make one. This page is about
+	the two times it is worth doing.
+</p>
+
+<h2>What a transformer actually is</h2>
+
+<p>
+	Pigeon does not make a RemoteEvent per channel. It keeps a small pool of them and
+	hashes each transformer onto one. So a transformer is a very small object. It holds
+	an id string, a destroyed flag and a list of teardown functions, and that is all.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Part</th><th>What it is for</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>uuid</code></td><td>Hashed to pick which pooled remote the traffic rides on.</td></tr>
+		<tr><td><code>destroyed</code></td><td><code>false</code> until you destroy it, then <code>true</code> forever.</td></tr>
+		<tr><td>Teardown list</td><td>Everything to shut off when the transformer is destroyed.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>You make one with <code>Pigeon.Transformer</code>.</p>
+
+<div class="api">
+	<pre class="api__sig"><code>Pigeon.Transformer(uuid: string?) -> Transformer</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>uuid</code></td><td><code>string?</code></td><td>The identity to adopt. Leave it out for a fresh GUID.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p><strong>Returns</strong> the new transformer.</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+print(combat.uuid)      --> "Combat"
+print(combat.destroyed) --> false
+
+-- Leave the id out and you get a fresh GUID.
+local anon = Pigeon.Transformer()
+print(anon.uuid)        --> "{4A2C...}"</code></pre>
+
+<p>
+	Pass the same uuid on both machines when you build a transformer on each side. The
+	uuid is what decides the remote, so two different strings are two different lanes.
+</p>
+
+<p>
+	Keep these two straight, because they are easy to mix up:
+</p>
+
+<div class="flow">
+	<p class="flow__label">What decides what</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">carrier name</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">which channel the message belongs to</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">transformer uuid</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">which remote the message leaves on</span>
+	</div>
+</div>
+
+<h2>You already have one</h2>
+
+<p>
+	When you call <code>Pigeon.new("Shop")</code> and pass no options, the carrier
+	builds a transformer for itself and uses the channel name as its uuid. You do not
+	have to do anything.
+</p>
+
+<pre><code>local shop = Pigeon.new("Shop")
+print(shop._transformer.uuid) --> "Shop"</code></pre>
+
+<p>
+	That is why the server and the client end up on the same remote without agreeing
+	on anything but the name. Both sides made a transformer called <code>"Shop"</code>,
+	and the same string always hashes to the same bucket. See
+	<a href="ref-pool.html">The Ref Pool</a> for how that hashing works.
+</p>
+
+<h2>Two reasons to make one yourself</h2>
+
+<h3>1. Hold a group of channels to one remote</h3>
+
+<p>
+	The size of the remote pool is worked out from how many transformers exist, not how
+	many channels. Three carriers with default transformers count as three. Put all
+	three on one transformer and they count as one, and all three ride the same remote.
+</p>
+
+<p>
+	This is worth doing when you have a cluster of chatty channels that logically belong
+	together, and you would rather they shared a lane than spread out.
+</p>
+
+<h3>2. Turn a group of channels off in one call</h3>
+
+<p>
+	Every carrier registers its own cleanup on its transformer when it is built. So
+	destroying a transformer drops every carrier riding on it, along with every listener
+	those carriers had bound.
+</p>
+
+<p>
+	That is the real reason most people reach for one. A round ends, a minigame closes,
+	a system gets disabled, and you want all of its channels gone without keeping a list
+	of them by hand.
+</p>
+
+<h2>The cluster pattern</h2>
+
+<p>
+	Make one transformer, hand it to each carrier through options, and destroy it when
+	the group is done.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local damage  = Pigeon.new("Damage",  { Transformer = combat })
+local status  = Pigeon.new("Status",  { Transformer = combat })
+local effects = Pigeon.new("Effects", { Transformer = combat })
+
+damage:On("Hit", function(player, target, amount)
+	applyDamage(player, target, amount)
+end)
+
+status:On("Cleanse", function(player)
+	clearStatus(player)
+end)
+
+effects:Broadcast("Play", "explosion", Vector3.new(0, 10, 0))
+
+-- Round over. One call drops all three channels and every listener on them.
+combat:Destroy()</code></pre>
+</div>
+
+<p>
+	After that call, all three carriers are dropped. Sending on them does nothing at
+	all. They do not throw.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		Passing options makes the carrier fresh and uncached. <code>Pigeon.new("Damage")</code>
+		somewhere else gives you a <em>different</em> carrier on its own transformer, and
+		both of them hear every packet sent to the channel named <code>Damage</code>, so
+		both sets of listeners fire. Hold on to the reference you got here, and keep the
+		receiving side down to one carrier per name.
+	</p>
+</div>
+
+<h2>Ownership: who destroys the transformer</h2>
+
+<p>
+	The rule is short. A transformer a carrier made for itself has no other owner, so it
+	goes when the carrier goes. One you passed in belongs to you, so Pigeon leaves it
+	alone.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>How you built the carrier</th><th>Who owns the transformer</th><th>What <code>carrier:Destroy()</code> does to it</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>Pigeon.new("Shop")</code></td>
+			<td>The carrier</td>
+			<td>Destroys it as well.</td>
+		</tr>
+		<tr>
+			<td><code>Pigeon.new("Shop", { Timeout = 5 })</code></td>
+			<td>The carrier</td>
+			<td>Destroys it as well. No transformer was passed, so it still made its own.</td>
+		</tr>
+		<tr>
+			<td><code>Pigeon.new("Shop", { Transformer = t })</code></td>
+			<td>You</td>
+			<td>Leaves it alone.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<pre><code>-- Owned by the carrier.
+local shop = Pigeon.new("Shop")
+shop:Destroy()
+print(shop._transformer.destroyed) --> true
+
+-- Owned by you.
+local mine = Pigeon.Transformer("Mine")
+local other = Pigeon.new("Other", { Transformer = mine })
+other:Destroy()
+print(mine.destroyed) --> false</code></pre>
+
+<p>
+	It goes the other way too. Destroying a transformer you own drops every carrier on
+	it, whether or not those carriers own anything themselves.
+</p>
+
+<h2>Track and the untrack handle</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>transformer:Track(disconnect: () -> ()) -> () -> ()</code></pre>
+</div>
+
+<p>
+	<code>Track</code> registers a function to run when the transformer is destroyed.
+	This is the mechanism the whole group teardown is built on. Carriers use it for
+	their own cleanup, and you can use it for anything else that should die with the
+	group.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>disconnect</code></td><td><code>() -> ()</code></td><td>Runs once when the transformer is destroyed.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> a handle. Calling the handle removes your teardown again.
+</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local connection = workspace.Arena.Touched:Connect(onTouch)
+
+local untrack = combat:Track(function()
+	connection:Disconnect()
+end)
+
+-- Later, if you disconnect it yourself first, drop the teardown too.
+connection:Disconnect()
+untrack()</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Call the handle whenever you unsubscribe early. If you do not, the teardown list
+		grows by one entry for every subscription you ever made, and it holds those
+		functions in memory until the transformer is destroyed.
+	</p>
+</div>
+
+<h4>Tracking on a destroyed transformer</h4>
+
+<p>
+	If the transformer is already destroyed, your function runs straight away and the
+	handle you get back does nothing. There is no error and no queue.
+</p>
+
+<pre><code>local t = Pigeon.Transformer()
+t:Destroy()
+
+t:Track(function()
+	print("this runs right now, not later")
+end)</code></pre>
+
+<p>
+	That is on purpose. A registration that arrives late can never leave a live
+	connection behind. It also explains a carrier built on a dead transformer: the
+	carrier tracks its own cleanup during construction, that cleanup fires immediately,
+	and you get back a carrier that is already inert.
+</p>
+
+<h2>Destroying, in detail</h2>
+
+<div class="api">
+	<pre class="api__sig"><code>transformer:Destroy() -> ()</code></pre>
+</div>
+
+<p>Takes no parameters and returns nothing. In order, it:</p>
+
+<ul>
+	<li>Marks itself destroyed, so nothing can recurse back into it.</li>
+	<li>Runs every tracked teardown once, over a snapshot of the list, so a teardown that untracks itself does not make the loop skip an entry.</li>
+	<li>Clears the list.</li>
+	<li>Stops counting toward the remote pool size, so the published pool size can go back down.</li>
+</ul>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+local damage = Pigeon.new("Damage", { Transformer = combat })
+
+combat:Destroy()
+print(combat.destroyed) --> true
+print(damage._dropped)  --> true, the carrier went with it
+
+combat:Destroy()        --> nothing happens the second time</code></pre>
+
+<p>
+	If one teardown errors, Pigeon warns and carries on with the next one. A single
+	broken cleanup function cannot leave the rest connected.
+</p>
+
+<h2>The two sides do not need the same transformer</h2>
+
+<p>
+	This surprises people, so it is worth being blunt about. Routing is by channel name.
+	A transformer only decides which remote a packet leaves on.
+</p>
+
+<p>
+	Every event a carrier sends travels under a name built from the channel and the
+	event, joined by a NUL byte:
+</p>
+
+<pre><code>-- carrier named "Damage", event "Hit"
+"Damage" .. "\0" .. "Hit"</code></pre>
+
+<p>
+	The receiving machine dispatches on that name, across every remote it is bound to.
+	So the server can put <code>Damage</code> on a cluster transformer while the client
+	just calls <code>Pigeon.new("Damage")</code>, and the two still talk.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local combat = Pigeon.Transformer("Combat")
+local damage = Pigeon.new("Damage", { Transformer = combat })
+
+damage:Broadcast("Hit", "Goblin", 25)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>-- No transformer here at all. Same channel name, so it still arrives.
+local damage = Pigeon.new("Damage")
+
+damage:On("Hit", function(target, amount)
+	showHitMarker(target, amount)
+end)
+
+damage:Init()</code></pre>
+</div>
+
+<p>
+	Requests work across a mismatch too. A reply goes back on whichever remote the
+	request came in on, not on the local transformer's remote, so the round trip
+	closes either way.
+</p>
+
+<h2>Sharing a transformer does not merge channels</h2>
+
+<p>
+	Two carriers on one transformer do not hear each other. The channel name is baked
+	into the wire name, so a <code>"Hit"</code> event on <code>Damage</code> and a
+	<code>"Hit"</code> event on <code>Status</code> are different names even when both
+	go out on the same remote.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local combat = Pigeon.Transformer("Combat")
+local damage = Pigeon.new("Damage", { Transformer = combat })
+local status = Pigeon.new("Status", { Transformer = combat })
+
+damage:On("Hit", print)  -- only ever sees Damage/Hit
+status:On("Hit", print)  -- only ever sees Status/Hit
+
+-- Each channel opens on its own, even though they share a remote.
+damage:Init()
+status:Init()</code></pre>
+</div>
+
+<h2>Getting the remote directly</h2>
+
+<p>
+	If you ever want the actual RemoteEvent a transformer resolves to, there is
+	<code>Pigeon.GetRef</code>. Carriers do this for you, so this is mostly for
+	debugging.
+</p>
+
+<pre><code>local combat = Pigeon.Transformer("Combat")
+
+local remote = Pigeon.GetRef(combat)
+print(remote.Name) --> whichever "PigeonRef_N" this uuid hashes to</code></pre>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		On the client this yields until the server has created that remote and it has
+		replicated in. On the server it returns immediately.
+	</p>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="ref-pool.html">The Ref Pool</a> for how a uuid turns into a remote.</li>
+	<li><a href="cleanup.html">Cleanup</a> for shutting a system down properly.</li>
+	<li><a href="../api/transformer.html">Transformer API</a> for the exact signatures.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>
