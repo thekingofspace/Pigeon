@@ -430,8 +430,13 @@ print(count .. " of them were on the channel")</code></pre>
 	It is not a ban. The client can call <code>Handshake</code> again whenever it likes
 	and your guard judges it afresh. Approve it and the channel opens again, and a new
 	<code>RequestTable</code> for a released id fetches a fresh mirror with a fresh
-	snapshot. Rooms are left alone on purpose, so a player who gets back in resumes
-	hearing room sends with no bookkeeping from you.
+	snapshot.
+</p>
+
+<p>
+	Rooms do not come back on their own. Losing access takes the player out of every
+	room on the carrier, so if you want them back in one after they are approved
+	again, put them back with <code>JoinRoom</code>.
 </p>
 
 <p>
@@ -461,9 +466,23 @@ print(count .. " of them were on the channel")</code></pre>
 
 <p>
 	<strong>A guard that errors refuses that attempt.</strong> Pigeon catches it, warns,
-	and answers false. It does not mark the player as refused though, so an approval
-	they already had is left alone. Only a guard that runs to the end and returns
-	something other than <code>true</code> revokes.
+	and answers false. A broken guard is treated the same as one that said no, so any
+	approval the player already had goes too. The alternative would be worse: the
+	client is told it was refused while the server still counts it as approved, and the
+	two sides disagree about who is allowed in.
+</p>
+
+<p>
+	<strong>Losing access clears the player out.</strong> However they lose it, by a
+	guard saying no or by <a href="#revoke"><code>Revoke</code></a>, an approved player
+	is taken out of every room on the carrier and unsubscribed from every staged table
+	it holds, and their client is told to let those mirrors go. Nothing on the channel
+	is left pointing at them.
+</p>
+
+<p>
+	A client that was never approved is not touched, because there is nothing to take
+	away. It already receives nothing: the guard filters it out of every send.
 </p>
 
 <div class="note note--warn">
@@ -736,7 +755,7 @@ end
 		</tr>
 		<tr>
 			<td>You revoke a player who is in a room</td>
-			<td>They stay in the room. The guard is what stops the sends reaching them.</td>
+			<td>They are taken out of every room on the carrier. Put them back with <code>JoinRoom</code> if they are approved again.</td>
 		</tr>
 	</tbody>
 </table>

@@ -64,7 +64,7 @@ print(staged:GetTable().coins) --&gt; 25</code></pre>
 <p>
 	The starting contents are copied in, and checked as they are copied. If you pass
 	something a staged table cannot carry, <code>Pigeon.StagedTable</code> errors on that
-	line. See <a href="#write-errors">Write errors</a> below for the five messages.
+	line. See <a href="#write-errors">Write errors</a> below for the exact messages.
 </p>
 
 <div class="note">
@@ -97,6 +97,14 @@ view.health = 80
 view.stats = { speed = 16 }
 view.stats.speed = 24
 print(view.health) --&gt; 80</code></pre>
+
+<p>
+	Reading a key that holds a table gives you another view. That nested view points at
+	the key it came from, not at the table that was sitting there, and it asks its parent
+	for the table again every time you touch it. So it keeps working when the table under
+	it is replaced. See
+	<a href="#a-nested-view-follows-the-slot">A nested view follows the slot</a>.
+</p>
 
 <h4>What a write does on each side</h4>
 
@@ -546,19 +554,19 @@ print(staged:GetTable().stats.speed) --&gt; 16</code></pre>
 	<tbody>
 		<tr>
 			<td><code>__index</code></td>
-			<td>Reading a key. A plain value comes straight out. A table value comes back as another view of that inner table, built on demand and held weakly.</td>
+			<td>Reading a key. The view resolves its own table through its parent first. A plain value comes straight out. A table value comes back as another view of that key, built on demand and held weakly. If there is no table to resolve to, the read gives <code>nil</code>.</td>
 		</tr>
 		<tr>
 			<td><code>__newindex</code></td>
-			<td>Writing a key. The value is checked and deep copied first, then stored, then reported as a patch with the full path from the root.</td>
+			<td>Writing a key. The view resolves its table, then the value is checked and deep copied, then stored, then reported as a patch with the full path from the root. If there is no table to resolve to, the write raises <a href="#err-stage-detached"><code>ERR_STAGE_DETACHED</code></a>.</td>
 		</tr>
 		<tr>
 			<td><code>__len</code></td>
-			<td><code>#view</code> is the length of the table behind it.</td>
+			<td><code>#view</code> is the length of whatever table is in that slot right now, or <code>0</code> if there is none.</td>
 		</tr>
 		<tr>
 			<td><code>__iter</code></td>
-			<td><code>for k, v in view</code> walks the real table behind the proxy.</td>
+			<td><code>for k, v in view</code> walks whatever table is in that slot right now. If there is none, the loop runs zero times rather than erroring.</td>
 		</tr>
 	</tbody>
 </table>
@@ -610,18 +618,54 @@ items[#items + 1] = "sword"</code></pre>
 	<li>A rejected write leaves nothing behind. The check runs before the store, so an error means the table is untouched.</li>
 	<li>Nested writes report the full path, so changing one field deep inside sends that field and not the whole table.</li>
 	<li>Child views are held weakly. One that nothing keeps a reference to is collected and rebuilt on the next read.</li>
+	<li>Reading the same key twice gives you the same view back, so <code>view.a == view.a</code>.</li>
 </ul>
 
-<div class="note note--warn">
-	<p class="note__title">Careful</p>
-	<p>
-		A nested view is tied to the inner table it wrapped. If a patch or a snapshot
-		replaces that whole inner table, a nested view you are still holding points at the
-		old one and shows stale values. Read down from the root again after you expect a
-		change, rather than keeping <code>local stats = view.stats</code> around for a
-		long time. See <a href="../guide/known-issues.html">Known Issues</a>.
-	</p>
-</div>
+<h3>A nested view follows the slot</h3>
+
+<p>
+	A nested view does not hold the inner table. It holds the key it sits under, and asks
+	its parent for the table again on every read, every write, every length check and
+	every loop. <code>local stats = view.stats</code> points at the <code>stats</code>
+	key, not at the table that happened to be there when you read it.
+</p>
+
+<p>
+	So a view you keep around stays correct when the whole table under it is replaced,
+	whether that came from a patch, from <code>ApplySnapshot</code>, or from a plain
+	write. It shows the new contents, including keys that were not there before. This
+	holds at any depth: <code>view.a.b.c</code> follows a replacement made at
+	<code>a</code>.
+</p>
+
+<pre><code>local view = staged:GetTable()
+view.stats = { speed = 16 }
+
+local stats = view.stats
+
+-- The whole stats table is replaced.
+view.stats = { speed = 24, jump = 50 }
+
+print(stats.speed) --&gt; 24
+print(stats.jump) --&gt; 50
+
+view.items = { "sword" }
+local items = view.items
+view.items = { "sword", "shield", "bow" }
+print(#items) --&gt; 3</code></pre>
+
+<p>
+	If the table is taken away, the view you are holding reads as empty. Every key gives
+	<code>nil</code>, <code>#</code> is <code>0</code> and a loop runs zero times. None of
+	that errors. Writing does, with
+	<a href="#err-stage-detached"><code>ERR_STAGE_DETACHED</code></a>. Put a table back in
+	that key and the view you were already holding picks it up.
+</p>
+
+<p>
+	Every level of nesting is resolved when you touch it, so a read four tables deep does
+	a little more work than one at the top. It is not something a normal game notices.
+</p>
 
 <h2>What you may store</h2>
 
@@ -688,9 +732,12 @@ items[#items + 1] = "sword"</code></pre>
 <h2>Write errors</h2>
 
 <p>
-	All five come from the same check, and all five are raised before anything is stored.
-	Each message names the path to the value that caused it, written as <code>root</code>
-	for the top level or <code>root.stats.health</code> further down.
+	A write can raise six errors. Five of them come from the same check on the value, and
+	all five are raised before anything is stored. Each message names the path to the
+	value that caused it, written as <code>root</code> for the top level or
+	<code>root.stats.health</code> further down. The sixth,
+	<a href="#err-stage-detached"><code>ERR_STAGE_DETACHED</code></a>, is about where you
+	are writing rather than what.
 </p>
 
 <div class="table-wrap">
@@ -743,6 +790,33 @@ ERR_STAGE_TABLE_KEY | Staged table keys must be values, not tables; got one at r
 		why the path is in the message. Read the path to find the value that upset it.
 	</p>
 </div>
+
+<h3>ERR_STAGE_DETACHED</h3>
+
+<p>
+	This one is not about the value. It fires when you write through a nested view whose
+	table is no longer in the staged table. The view resolves through its parent, finds
+	no table there, and refuses the write rather than putting it somewhere nothing will
+	read it. The message names the path the view sits at.
+</p>
+
+<pre><code>ERR_STAGE_DETACHED | The table at root.stats is no longer part of this staged table.</code></pre>
+
+<pre><code>local view = staged:GetTable()
+view.stats = { speed = 16 }
+
+local stats = view.stats
+view.stats = nil
+
+print(stats.speed) --&gt; nil, reading is fine
+
+stats.speed = 24 -- ERR_STAGE_DETACHED</code></pre>
+
+<p>
+	Reads never raise it. A view over a table that has gone gives <code>nil</code> for
+	every key, a length of <code>0</code> and an empty loop. Only writing objects, and
+	only until something puts a table back in that key.
+</p>
 
 <h3>The same table twice is fine</h3>
 

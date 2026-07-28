@@ -33,7 +33,8 @@
 <p>
 	Every room method is server only. Call one on the client and it errors with
 	<code>ERR_NOT_SERVER</code>. A client joins a party by asking the server to put it
-	in one, using <a href="sending.html">Emit or Call</a>, and the server decides.
+	in one, using <a href="sending.html">Emit</a> or <a href="requests.html">Call</a>,
+	and the server decides.
 </p>
 
 <h2>Rooms belong to a carrier</h2>
@@ -83,6 +84,13 @@ chat:SendToRoom("lobby", "Message", "hello")</code></pre>
 <p>
 	Makes a room and fills it with the players you pass. If a room already exists under
 	that name it is thrown away and replaced, so the old members are no longer in it.
+</p>
+
+<p>
+	On a carrier with a <a href="handshakes.html">handshake</a> guard, every player you
+	name has to have passed it, or the call errors with <code>ERR_NOT_APPROVED</code> and
+	no room is made. See <a href="#rooms-and-guarded-channels">Rooms and guarded
+	channels</a>.
 </p>
 
 <div class="table-wrap">

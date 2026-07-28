@@ -17,6 +17,7 @@ local ERRORS = {
 	NO_TRANSFORMER = "ERR_NO_TRANSFORMER | options.Transformer must be a transformer.",
 	CAPTURE_DENIED = "ERR_CAPTURE_DENIED | Capture of table '%s' was denied.",
 	CALLBACK_ERROR = "ERR_CALLBACK_ERROR | Error in %s callback for event '%s': %s",
+	NOT_APPROVED = "ERR_NOT_APPROVED | %s has not passed the handshake, so cannot be put in room '%s'.",
 }
 
 local HELD_TTL = 10
@@ -89,6 +90,37 @@ local function alive(self: any): boolean
 	return not self._dropped and not self._transformer.destroyed
 end
 
+local NIL = "\0__pigeon_nil\0"
+
+local function packArgs(values: { any }, count: number): { any }
+	local out = table.create(count)
+	for index = 1, count do
+		local value = values[index]
+		if value == nil then
+			out[index] = NIL
+		else
+			out[index] = value
+		end
+	end
+	return out
+end
+
+local function unpackArgs(payload: any): ({ any }, number)
+	if type(payload) ~= "table" then
+		return {}, 0
+	end
+
+	local count = payload.n or #payload
+	local out = table.create(count)
+	for index = 1, count do
+		local value = payload[index]
+		if value ~= NIL then
+			out[index] = value
+		end
+	end
+	return out, count
+end
+
 local function serve(self: any, callbacks: { (...any) -> ...any }, packet: Packet)
 	local args, count = packet.args, packet.count
 	local player = packet.player
@@ -104,8 +136,8 @@ local function serve(self: any, callbacks: { (...any) -> ...any }, packet: Packe
 		if not results[1] then
 			warn(string.format(ERRORS.CALLBACK_ERROR, "listener", packet.event, tostring(results[2])))
 		elseif packet.promiseId then
-			local response = table.pack(table.unpack(results, 2, results.n))
-			Network.Respond(packet.transformerId, packet.promiseId, response, player)
+			local returned = table.move(results, 2, results.n, 1, {})
+			Network.Respond(packet.transformerId, packet.promiseId, packArgs(returned, results.n - 1), player)
 		end
 	end
 end
@@ -148,9 +180,7 @@ local function route(self: any, event: string, ...: any)
 		return
 	end
 
-	local args = if type(payload) == "table" then table.clone(payload) else {}
-	local count = if type(payload) == "table" then payload.n or #args else 0
-	args.n = nil
+	local args, count = unpackArgs(payload)
 
 	local resolved: string
 	resolved, args = applyMiddleware(self._incoming, "incoming", event, args, player)
@@ -175,7 +205,7 @@ local function route(self: any, event: string, ...: any)
 	if resolved ~= event then
 		if promiseId then
 
-			Network.Respond(transformerId, promiseId, table.pack(), player)
+			Network.Respond(transformerId, promiseId, {}, player)
 		end
 		return
 	end
@@ -199,16 +229,14 @@ local function bind(self: any, event: string)
 	end
 end
 
-local function prepare(self: any, event: string, player: Player?, ...: any): (string, { n: number, [number]: any })
+local function prepare(self: any, event: string, player: Player?, ...: any): (string, { any })
 	local args = table.pack(...)
 	local plain = table.move(args, 1, args.n, 1, {})
 
 	local resolved: string
 	resolved, plain = applyMiddleware(self._outgoing, "outgoing", event, plain, player)
 
-	local packed = table.move(plain, 1, math.max(#plain, args.n), 1, {}) :: any
-	packed.n = math.max(#plain, args.n)
-	return resolved, packed
+	return resolved, packArgs(plain, math.max(#plain, args.n))
 end
 
 function Carrier.On(self: any, event: string, Callback: (...any) -> ())
@@ -295,6 +323,33 @@ function Carrier.Handshake(self: any, ...: any): boolean
 	return self._handshaken
 end
 
+local function evict(self: any, player: Player): boolean
+	local admitted = self._authed[player] == true
+	self._authed[player] = nil
+
+	for _, room in self._rooms do
+		local index = table.find(room, player)
+		if index then
+			table.remove(room, index)
+		end
+	end
+
+	local dropped = {}
+	for id, staged in self._tables do
+		if staged._subscribers and staged._subscribers[player] ~= nil then
+			staged._subscribers[player] = nil
+			table.insert(dropped, id)
+		end
+	end
+
+	if #dropped > 0 then
+		local resolved, packed = prepare(self, EV_TABLE_REVOKE, player, dropped)
+		Network.Broadcast({ player }, self._transformer, wire(self, resolved), packed, false)
+	end
+
+	return admitted
+end
+
 function Carrier.Revoke(self: any, Targets: { Player } | Player): number
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
@@ -304,29 +359,11 @@ function Carrier.Revoke(self: any, Targets: { Player } | Player): number
 	end
 
 	local revoked = 0
-
 	for _, player in toList(Targets) do
-		local admitted = self._authed[player] == true
-		self._authed[player] = nil
-
-		local dropped = {}
-		for id, staged in self._tables do
-			if staged._subscribers and staged._subscribers[player] ~= nil then
-				staged._subscribers[player] = nil
-				table.insert(dropped, id)
-			end
-		end
-
-		if #dropped > 0 then
-			local resolved, packed = prepare(self, EV_TABLE_REVOKE, player, dropped)
-			Network.Broadcast({ player }, self._transformer, wire(self, resolved), packed, false)
-		end
-
-		if admitted then
+		if evict(self, player) then
 			revoked += 1
 		end
 	end
-
 	return revoked
 end
 
@@ -416,7 +453,8 @@ function Carrier.Call(self: any, event: string, ...: any): ...any
 	if not ok or type(response) ~= "table" then
 		return nil
 	end
-	return table.unpack(response, 1, response.n or #response)
+	local values, count = unpackArgs(response)
+	return table.unpack(values, 1, count)
 end
 
 function Carrier.CallTo(self: any, Target: Player, Event: string, ...: any): ...any
@@ -441,15 +479,35 @@ function Carrier.CallTo(self: any, Target: Player, Event: string, ...: any): ...
 	if type(response) ~= "table" then
 		return nil
 	end
-	return table.unpack(response, 1, response.n or #response)
+	local values, count = unpackArgs(response)
+	return table.unpack(values, 1, count)
+end
+
+local function firstUnapproved(self: any, members: { Player }): Player?
+	if not self._handshake then
+		return nil
+	end
+	for _, player in members do
+		if self._authed[player] ~= true then
+			return player
+		end
+	end
+	return nil
 end
 
 function Carrier.CreateRoom(self: any, RoomID: string, Members: { Player })
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
+
+	local members = Members or {}
+	local blocked = firstUnapproved(self, members)
+	if blocked then
+		error(string.format(ERRORS.NOT_APPROVED, tostring(blocked), RoomID), 2)
+	end
+
 	self._rooms[RoomID] = {}
-	for _, player in Members or {} do
+	for _, player in members do
 		table.insert(self._rooms[RoomID], player)
 	end
 end
@@ -466,12 +524,18 @@ function Carrier.JoinRoom(self: any, RoomID: string, Members: { Player } | Playe
 		error(ERRORS.NOT_SERVER, 2)
 	end
 
+	local members = toList(Members)
+	local blocked = firstUnapproved(self, members)
+	if blocked then
+		error(string.format(ERRORS.NOT_APPROVED, tostring(blocked), RoomID), 2)
+	end
+
 	local room = self._rooms[RoomID]
 	if not room then
 		room = {}
 		self._rooms[RoomID] = room
 	end
-	for _, player in toList(Members) do
+	for _, player in members do
 		if not table.find(room, player) then
 			table.insert(room, player)
 		end
@@ -695,11 +759,20 @@ local function installProtocol(self: any)
 			local ok, granted = pcall(self._handshake, player, ...)
 			if not ok then
 				warn(string.format(ERRORS.CALLBACK_ERROR, "handshake", EV_HANDSHAKE, tostring(granted)))
-				return false
+				granted = false
 			end
 
-			self._authed[player] = granted == true
-			return granted == true
+			if granted == true then
+				self._authed[player] = true
+				return true
+			end
+
+			if self._authed[player] == true then
+				evict(self, player)
+			else
+				self._authed[player] = nil
+			end
+			return false
 		end)
 
 		Carrier.On(self, EV_TABLE_REQUEST, function(player: Player, id: string)

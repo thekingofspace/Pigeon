@@ -57,25 +57,30 @@ return function(TestKit: any, Fixtures: any, player: Player): { any }
 		t.eq(third, false)
 	end)
 
-	calls:known(
-		"preserves a nil in the middle of the argument list",
-		"the { [1] = ..., n = count } envelope mixes integer and string keys, so Roblox strips n in transit and the arity falls back to #args",
-		function(t)
-			local result = live:CallTo(player, "Arity", 1, nil, 3)
-			t.eq(result, 3, "the packed arity must survive the round trip")
-		end
-	)
+	calls:test("preserves a nil in the middle of the argument list", function(t)
+		t.eq(live:CallTo(player, "Arity", 1, nil, 3), 3, "the arity must survive the round trip")
+	end)
 
-	calls:known(
-		"preserves a trailing nil",
-		"same dropped n; with no hole in the payload this isolates the cause to the mixed-key envelope rather than to the nil itself",
-		function(t)
-			t.eq(live:CallTo(player, "Arity", 1, nil), 2)
-		end
-	)
+	calls:test("preserves a trailing nil", function(t)
+		t.eq(live:CallTo(player, "Arity", 1, nil), 2)
+	end)
+
+	calls:test("preserves a leading nil", function(t)
+		t.eq(live:CallTo(player, "Arity", nil, 2, 3), 3)
+	end)
+
+	calls:test("preserves an argument list that is all nils", function(t)
+		t.eq(live:CallTo(player, "Arity", nil, nil), 2)
+	end)
 
 	calls:test("an argument list with no nils keeps its arity", function(t)
-		t.eq(live:CallTo(player, "Arity", 1, 2, 3), 3, "#args agrees with n when nothing is missing")
+		t.eq(live:CallTo(player, "Arity", 1, 2, 3), 3)
+	end)
+
+	calls:test("the nil sentinel is not confused with a real string", function(t)
+		local first, second = live:CallTo(player, "Echo", "\0__pigeon_nil\0", "after")
+		t.eq(second, "after", "the argument after it must still arrive")
+		t.eq(first, nil, "a client sending the sentinel itself reads back as nil, which is the known limit")
 	end)
 
 	calls:test("survives a client listener that yields", function(t)

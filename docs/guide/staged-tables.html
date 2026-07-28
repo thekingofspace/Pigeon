@@ -139,6 +139,63 @@ for name in view.players do
 	view.players[name].score = 0
 end</code></pre>
 
+<h3>A nested view follows its slot</h3>
+
+<p>
+	A nested view is tied to a key, not to the table that happens to sit under that key
+	right now. Every read looks the table up again through its parent. So keeping one in
+	a variable is fine, even if the server later replaces the whole table.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local view = mine:GetTable()
+local stats = view.stats
+
+print(stats.health)  -- 100
+
+-- The server does: view.stats = { health = 40, shield = 5 }
+
+print(stats.health)  -- 40
+print(stats.shield)  -- 5, a key that was not there a moment ago</code></pre>
+</div>
+
+<p>
+	That holds at any depth, so <code>view.a.b.c</code> follows a replacement made at
+	<code>a</code>. It holds for a full snapshot too, which clears and refills the whole
+	store. <code>#stats</code> and <code>for key, value in stats do</code> read the
+	current table as well. Nested views are cached, so <code>view.stats</code> is the
+	same object each time you ask for it.
+</p>
+
+<p>
+	If the table is removed altogether, the view you kept still works and simply has
+	nothing to show: reads give <code>nil</code>, the length is <code>0</code> and a loop
+	over it runs zero times. Writing through it is the one thing that errors.
+</p>
+
+<pre><code>-- The server did: view.stats = nil
+print(stats.health)  -- nil
+print(#stats)        -- 0
+
+stats.health = 60
+
+-- ERR_STAGE_DETACHED | The table at root.stats is no longer part of
+-- this staged table.</code></pre>
+
+<p>
+	Put a table back in that slot and the view you were already holding picks it up
+	again.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Each level of nesting is looked up when you touch it, so a very deep read does a
+		little more work than a shallow one. It is not an amount a normal game notices.
+	</p>
+</div>
+
 <h2>Publishing it</h2>
 
 <div class="api">
@@ -179,6 +236,26 @@ end)</code></pre>
 		A staged table holds one write hook, and capturing sets it. Capture the same
 		staged table again, on another carrier or under another id, and the new capture
 		replaces the old hook. Only the most recent one sends patches.
+	</p>
+</div>
+
+<h3>Capture on a reliable carrier</h3>
+
+<p>
+	Snapshots and patches are ordinary fire and forget broadcasts, so they take whatever
+	lane the carrier is set to. On a carrier built with
+	<code>{ Unreliable = true }</code> that is the lossy lane, and a dropped patch is
+	never resent, so the mirror is wrong from then on and nothing corrects it.
+</p>
+
+<div class="note note--danger">
+	<p class="note__title">Warning</p>
+	<p>
+		Do not capture a staged table on an unreliable carrier. Keep the table on a
+		reliable one and use a separate unreliable carrier for the traffic that can
+		afford to be lost. The same goes for flipping
+		<code>carrier.Unreliable</code> to <code>true</code> on a carrier that is already
+		carrying a table. See <a href="unreliable.html">Unreliable Sending</a>.
 	</p>
 </div>
 
@@ -287,7 +364,7 @@ end</code></pre>
 	</div>
 	<div class="flow__row">
 		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box">__pigeon_table_patch to the holders</span>
+		<span class="flow__box">__pigeon_table_patch to the subscribers</span>
 		<span class="flow__arrow">&rarr;</span>
 		<span class="flow__box flow__box--brand">applied to the mirror</span>
 	</div>
@@ -351,7 +428,7 @@ end</code></pre>
 	server taking the table off a client.
 </p>
 
-<h3>Release <span class="badge badge--client">Client</span></h3>
+<h3>Release <span class="badge badge--shared">Shared</span></h3>
 
 <div class="api">
 	<pre class="api__sig"><code>staged:Release() -> ()</code></pre>
@@ -362,6 +439,13 @@ end</code></pre>
 	this stops the subscription. The carrier drops its cached mirror and tells the server
 	to take you off the list, so no more patches are sent for that table. A release guard
 	can refuse that last part, which is covered under <a href="#guards">Guards</a>.
+</p>
+
+<p>
+	It does not error on the server, but it does almost nothing there. A staged table on
+	the server has no release hook, so <code>Release</code> only flips a flag: it does not
+	stop replication and it does not drop subscribers. Use <code>ReleaseTable</code> or
+	destroy the carrier for that.
 </p>
 
 <div class="code-block">
@@ -418,7 +502,7 @@ other:Release()</code></pre>
 
 <p>
 	If you want replication to actually stop, drop the carrier with
-	<code>carrier:Destroy()</code>. That clears the write hook and the holder list on
+	<code>carrier:Destroy()</code>. That clears the write hook and the subscriber list on
 	every table the carrier was pointing at. The staged tables themselves survive, so any
 	of them can be captured again by another carrier. See <a href="cleanup.html">Cleanup</a>.
 </p>
@@ -437,7 +521,7 @@ other:Release()</code></pre>
 <p>
 	This is the server taking the table back off a client. Pass one player or a list of
 	them. Each one loses their place in the carrier's admission list, and comes off the
-	holder list of every staged table the carrier holds. The full reference is on the
+	subscriber list of every staged table the carrier holds. The full reference is on the
 	<a href="../api/carrier.html#revoke">Carrier</a> page.
 </p>
 
@@ -457,10 +541,10 @@ other:Release()</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>local stats = Pigeon.new("Stats")
+<pre><code>local match = Pigeon.new("Match")
 
--- They sold the pet, so they stop seeing its row.
-local removed = stats:Revoke(player)
+-- They left the match, so they let go of every table this carrier holds.
+local removed = match:Revoke(player)
 print(removed)  -- 1 if they were admitted, 0 if not</code></pre>
 </div>
 
@@ -469,7 +553,7 @@ print(removed)  -- 1 if they were admitted, 0 if not</code></pre>
 	<code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code> and
 	<code>SendToRoom</code> skips them, <code>CallTo</code> returns <code>nil</code> without
 	asking, and anything they send is dropped before your handlers see it. No more patches
-	reach their mirror either, because they are off the holder list.
+	reach their mirror either, because they are off the subscriber list.
 </p>
 
 <div class="note note--warn">
@@ -492,10 +576,11 @@ print(removed)  -- 1 if they were admitted, 0 if not</code></pre>
 </div>
 
 <p>
-	Rooms are left alone on purpose. A revoked player stays in every room they were in, they
-	simply hear nothing because the handshake filter drops them from each send. Nor is any
-	of this permanent. The client can call <code>Handshake</code> again and be judged
-	afresh, then ask for the table again and get a new mirror with a new snapshot.
+	Revoking also takes the player out of every room on the carrier, so there is no
+	corner of the channel left open to them. None of it is permanent though. The
+	client can call <code>Handshake</code> again and be judged afresh, then ask for
+	the table again and get a new mirror with a new snapshot. Rooms are the one thing
+	that does not come back by itself, so put them back with <code>JoinRoom</code>.
 </p>
 
 <h3>Which one you want</h3>
@@ -527,7 +612,7 @@ print(removed)  -- 1 if they were admitted, 0 if not</code></pre>
 		<tr>
 			<td>Who stops getting patches</td>
 			<td>Just the caller</td>
-			<td>Nobody, holders carry on</td>
+			<td>Nobody, subscribers carry on</td>
 			<td>Just the players you named</td>
 		</tr>
 		<tr>
@@ -914,7 +999,7 @@ redrawHud(view)</code></pre>
 		</tr>
 		<tr>
 			<td>The server replaces a whole nested table</td>
-			<td>A nested view the client already read may keep showing the old contents. Prefer writing leaves. See <a href="known-issues.html">Known Issues</a>.</td>
+			<td>Clients see the new contents, and a nested view read before the swap follows it. Writing a leaf still sends less data than replacing the table around it, so patch leaves where you can.</td>
 		</tr>
 		<tr>
 			<td>The same staged table is captured twice</td>
@@ -930,15 +1015,19 @@ redrawHud(view)</code></pre>
 		</tr>
 		<tr>
 			<td><code>ForceTable</code> to a client that has not passed the handshake</td>
-			<td>They are marked as a holder but the snapshot is filtered out, so they get nothing.</td>
+			<td>They are marked as a subscriber but the snapshot is filtered out, so they get nothing.</td>
 		</tr>
 		<tr>
 			<td>A player leaves</td>
-			<td>They are taken off the holder list of every table the carrier still points at.</td>
+			<td>They are taken off the subscriber list of every table the carrier still points at.</td>
 		</tr>
 		<tr>
 			<td>The carrier is dropped on the client</td>
 			<td>Its mirrors are marked released. The server is not told, so it keeps them on the list until they leave.</td>
+		</tr>
+		<tr>
+			<td>The carrier is <a href="unreliable.html">unreliable</a></td>
+			<td>Snapshots and patches take the lossy lane and a dropped one is never resent, so the mirror goes stale for good. Capture on a reliable carrier.</td>
 		</tr>
 	</tbody>
 </table>
@@ -949,6 +1038,7 @@ redrawHud(view)</code></pre>
 <ul>
 	<li><a href="../api/staged-table.html">StagedTable</a> for the full method list.</li>
 	<li><a href="../api/carrier.html">Carrier</a> for <code>CaptureTable</code>, <code>RequestTable</code>, <code>ForceTable</code> and <code>ReleaseTable</code>.</li>
+	<li><a href="../api/carrier.html#revoke">Carrier: Revoke</a> for taking a table back off a client.</li>
 	<li><a href="startup.html">Startup and Buffering</a> for why <code>Init</code> matters so much here.</li>
 	<li><a href="known-issues.html">Known Issues</a> for the sharp edges.</li>
 </ul>

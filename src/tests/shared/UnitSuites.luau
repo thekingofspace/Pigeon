@@ -9,6 +9,18 @@ local function nameFor(where: string, label: string): string
 	return string.format("PigeonUnit_%s_%s", where, label)
 end
 
+local function encodeTable(value: any): any
+	if type(value) ~= "table" then
+		return value
+	end
+	local keys, values = {}, {}
+	for key, item in value do
+		table.insert(keys, key)
+		table.insert(values, encodeTable(item))
+	end
+	return { K = keys, V = values }
+end
+
 return function(TestKit: any, where: string): { any }
 	local suites = {}
 	local counter = 0
@@ -449,38 +461,115 @@ return function(TestKit: any, where: string): { any }
 		end, "ERR_STAGE_BEHAVIOUR")
 	end)
 
-	proxy:known(
-		"a cached child view follows its table being replaced by ApplyPatches",
-		"wrap() caches child proxies by key and never re-checks that the raw table is still the same object, so a client that held a nested view before a whole-subtable patch keeps reading the old table",
-		function(t)
-			local staged = Pigeon.StagedTable({ a = { x = 1 } })
-			local view = staged:GetTable()
+	proxy:test("a nested view follows its table being replaced by ApplyPatches", function(t)
+		local staged = Pigeon.StagedTable({ a = { x = 1 } })
+		local view = staged:GetTable()
 
-			local held = view.a
-			t.eq(held.x, 1)
+		local held = view.a
+		t.eq(held.x, 1)
 
-			staged:ApplyPatches({ { path = { "a" }, value = { K = { "x" }, V = { 2 } } } })
+		staged:ApplyPatches({ { path = { "a" }, value = { K = { "x" }, V = { 2 } } } })
 
-			t.eq(view.a.x, 2, "the view should show the patched value")
+		t.eq(view.a.x, 2, "reading down from the top must show the patch")
+		t.eq(held.x, 2, "and so must a view that was already being held")
+	end)
+
+	proxy:test("a nested view follows ApplySnapshot", function(t)
+		local staged = Pigeon.StagedTable({ a = { x = 1 } })
+		local view = staged:GetTable()
+
+		local held = view.a
+		t.eq(held.x, 1)
+
+		local replacement = Pigeon.StagedTable({ a = { x = 2 } })
+		staged:ApplySnapshot(replacement:Snapshot())
+
+		t.eq(view.a.x, 2)
+		t.eq(held.x, 2, "a held view must survive the store being cleared and refilled")
+	end)
+
+	proxy:test("a held nested view follows a write through its parent", function(t)
+		local view = Pigeon.StagedTable({ a = { x = 1 } }):GetTable()
+
+		local held = view.a
+		view.a = { x = 2 }
+
+		t.eq(held.x, 2, "the view points at the slot, not at the table that was in it")
+	end)
+
+	proxy:test("a deep chain follows a replacement near the root", function(t)
+		local staged = Pigeon.StagedTable({ a = { b = { c = { value = 1 } } } })
+		local view = staged:GetTable()
+
+		local held = view.a.b.c
+		t.eq(held.value, 1)
+
+		staged:ApplyPatches({
+			{ path = { "a" }, value = encodeTable({ b = { c = { value = 2 } } }) },
+		})
+
+		t.eq(held.value, 2, "every level re-resolves through the one above it")
+	end)
+
+	proxy:test("length and iteration follow a replacement", function(t)
+		local staged = Pigeon.StagedTable({ list = { 1, 2, 3 } })
+		local held = staged:GetTable().list
+
+		t.eq(#held, 3)
+
+		staged:ApplyPatches({ { path = { "list" }, value = encodeTable({ 1, 2 }) } })
+
+		t.eq(#held, 2, "__len reads the current table")
+
+		local seen = 0
+		for _ in held do
+			seen += 1
 		end
-	)
+		t.eq(seen, 2, "__iter reads the current table")
+	end)
 
-	proxy:known(
-		"a cached child view follows ApplySnapshot",
-		"ApplySnapshot clears and repopulates the raw store with brand new nested tables while wrap()'s child cache still points at the old ones",
-		function(t)
-			local staged = Pigeon.StagedTable({ a = { x = 1 } })
-			local view = staged:GetTable()
+	proxy:test("a view whose table was removed reads as empty", function(t)
+		local staged = Pigeon.StagedTable({ a = { x = 1 } })
+		local view = staged:GetTable()
 
-			local held = view.a
-			t.eq(held.x, 1)
+		local held = view.a
+		view.a = nil
 
-			local replacement = Pigeon.StagedTable({ a = { x = 2 } })
-			staged:ApplySnapshot(replacement:Snapshot())
+		t.eq(held.x, nil, "there is nothing left to read")
+		t.eq(#held, 0)
 
-			t.eq(view.a.x, 2, "the view should show the new snapshot")
+		local seen = 0
+		for _ in held do
+			seen += 1
 		end
-	)
+		t.eq(seen, 0)
+	end)
+
+	proxy:test("writing through a view whose table was removed says so", function(t)
+		local staged = Pigeon.StagedTable({ stats = { hp = 1 } })
+		local view = staged:GetTable()
+
+		local held = view.stats
+		view.stats = nil
+
+		local message = t.throws(function()
+			held.hp = 5
+		end, "ERR_STAGE_DETACHED")
+		t.matches(message, "root.stats", "the error should name the table that went away")
+	end)
+
+	proxy:test("a slot that becomes a table again is readable through the held view", function(t)
+		local staged = Pigeon.StagedTable({ a = { x = 1 } })
+		local view = staged:GetTable()
+
+		local held = view.a
+		view.a = 5
+		t.eq(view.a, 5, "a scalar reads as a scalar")
+		t.eq(held.x, nil)
+
+		view.a = { x = 3 }
+		t.eq(held.x, 3, "and the held view picks the slot back up")
+	end)
 
 	local wire = TestKit.suite("StagedTable / snapshots and patches")
 	table.insert(suites, wire)

@@ -316,6 +316,35 @@ end)</code></pre>
 	</p>
 </div>
 
+<h3>Adding to a list that contains nil</h3>
+
+<p>
+	<code>table.insert</code> puts the value at <code>#args + 1</code>, and the length
+	of a table with a gap in it is not defined. If the caller passed a
+	<code>nil</code>, <code>table.insert</code> can land on the gap and overwrite it
+	instead of adding to the end.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>chat:Emit("Say", "hello", nil, "world")
+
+chat:UseOutgoing(function(direction, event, args)
+	-- Not this. The gap at 2 makes the position unreliable.
+	table.insert(args, os.time())
+
+	-- Do this instead. Say where it goes.
+	args[4] = os.time()
+	return nil, args
+end)</code></pre>
+</div>
+
+<p>
+	If your channel never sends <code>nil</code>, <code>table.insert</code> is fine.
+	If it might, count the arguments yourself and write to that index. See
+	<a href="sending.html">Sending and Receiving</a> for how <code>nil</code> travels.
+</p>
+
 <h2>Example: rename an event</h2>
 
 <p>
@@ -480,6 +509,7 @@ end)
 		<tr><td><code>__pigeon_table_snapshot</code></td><td>A full copy of a staged table, pushed out by <code>ForceTable</code>.</td></tr>
 		<tr><td><code>__pigeon_table_patch</code></td><td>A batch of staged table writes.</td></tr>
 		<tr><td><code>__pigeon_table_release</code></td><td>A client giving a staged table up.</td></tr>
+		<tr><td><code>__pigeon_table_revoke</code></td><td>The server taking staged tables off a client, sent by <code>Revoke</code>.</td></tr>
 	</tbody>
 </table>
 </div>

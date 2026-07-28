@@ -52,6 +52,13 @@ local shop = Pigeon.new("Shop")</code></pre>
 		handshakes and staged tables over them. Do not use that prefix.
 	</li>
 	<li>
+		Arguments carry <code>nil</code> faithfully.
+		<code>Emit("Hit", 1, nil, 6)</code> reaches the server as
+		<code>1, nil, 6</code>. That holds in any position, in every direction, and for
+		the values a listener returns. A <code>nil</code> inside a table you pass is
+		still a hole in that table, so use explicit keys if you need one there.
+	</li>
+	<li>
 		A server-only method called on the client errors with
 		<code>ERR_NOT_SERVER</code>, and a client-only method called on the server errors
 		with <code>ERR_NOT_CLIENT</code>. The error points at your call site, not at
@@ -64,6 +71,16 @@ local shop = Pigeon.new("Shop")</code></pre>
 		<a href="#destroy">Destroy</a>.
 	</li>
 </ul>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		A <code>nil</code> argument crosses the wire as a private marker string and is
+		turned back into <code>nil</code> on arrival. The marker is full of NUL bytes, so
+		no ordinary string looks like it, but a client that sends that exact string is
+		read as <code>nil</code>.
+	</p>
+</div>
 
 <h2>Every method at a glance</h2>
 
@@ -127,7 +144,7 @@ local shop = Pigeon.new("Shop")</code></pre>
 -- Or set it later on a carrier you already have.
 pos.Unreliable = false</code></pre>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Requests always take the reliable lane whatever this is set to, because a reply
@@ -231,7 +248,7 @@ shop:Init()</code></pre>
 	it.
 </p>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Only one of them can answer a request. Every listener that does not error sends a
@@ -310,7 +327,7 @@ shop:On("Sold", onSold)
 shop:Off("Sold", onSold)   -- removes that one
 shop:Off("Sold")           -- removes everything left on "Sold"</code></pre>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Matching is by function identity. A callback you wrote inline as
@@ -441,7 +458,7 @@ raid:BroadcastTo(party, "BossSpawned", bossId)
 raid:BroadcastTo({ playerA }, "Whisper", "you are next")</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		This one does not accept a bare <code>Player</code>. Pass
@@ -551,7 +568,7 @@ if not ok then
 end</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		A timeout and a listener that returned nothing look exactly the same from here:
@@ -615,7 +632,7 @@ if settings then
 end</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Never trust what comes back. A client answers a <code>CallTo</code> with whatever
@@ -654,7 +671,7 @@ end</code></pre>
 print(string.format("%d ms", seconds * 1000))</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		This measures the whole trip, not just the network. Your outgoing middleware here,
@@ -720,7 +737,7 @@ shop:Init()</code></pre>
 	never queued.
 </p>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Do not chain <code>Pigeon.new("Shop"):Init()</code> on one line and register
@@ -770,7 +787,7 @@ raid:CreateRoom("Party1", { playerA, playerB })
 raid:CreateRoom("Lobby", {})   -- empty, and stays alive until you destroy it</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		This replaces the room if one already has that name, and it does not remove
@@ -1051,8 +1068,8 @@ end</code></pre>
 
 <p>
 	Retrying is fine and is the only way back in. Nothing tells you when the server
-	swaps its guard or takes your access away, so if a closed channel goes quiet, hand
-	your credentials over again.
+	swaps its guard or <a href="#revoke">takes your access away</a>, so if a closed
+	channel goes quiet, hand your credentials over again.
 </p>
 
 <p>Errors with <code>ERR_NOT_CLIENT</code> if you call it on the server.</p>
@@ -1194,7 +1211,7 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 		</tr>
 		<tr>
 			<td>Rooms</td>
-			<td>Left alone on purpose. They stay in every room they were in and simply hear nothing, because the guard filters them out of the send.</td>
+			<td>They are taken out of every room on this carrier. Being approved again does not put them back, so call <code>JoinRoom</code> if you want that.</td>
 		</tr>
 		<tr>
 			<td>Getting back in</td>
@@ -1277,6 +1294,7 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 		<tr><td>Incoming, on the server</td><td>The player who sent it.</td></tr>
 		<tr><td>Incoming, on the client</td><td><code>nil</code>.</td></tr>
 		<tr><td>Outgoing, from <code>CallTo</code></td><td>The player being asked.</td></tr>
+		<tr><td>Outgoing, from <a href="#revoke"><code>Revoke</code></a></td><td>The player being revoked, on the reserved <code>__pigeon_table_revoke</code> message it sends them.</td></tr>
 		<tr><td>Outgoing, from anything else</td><td><code>nil</code>, including server broadcasts.</td></tr>
 	</tbody>
 </table>
@@ -1287,9 +1305,11 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 	<p>
 		Middleware cannot cancel a message. There is no return value that means "stop".
 		Incoming middleware can drop one in practice by renaming the event to something
-		nothing listens for, since a message with no listener is discarded. Outgoing
-		middleware cannot: the packet still leaves this machine, it just arrives under a
-		different name.
+		nothing listens for: a renamed packet is thrown away rather than held, and a
+		request renamed that way is answered with <code>nil</code> at once instead of
+		waiting out its timeout. A packet nobody renamed is still held for 10 seconds.
+		Outgoing middleware cannot drop anything: the packet still leaves this machine,
+		it just arrives under a different name.
 	</p>
 </div>
 
@@ -1316,8 +1336,9 @@ print(removed .. " of " .. #round.eliminated .. " were still admitted")</code></
 
 <p>
 	Adds middleware to the inbound path. It runs after the handshake check and before
-	any listener. It only runs for events this carrier already has an <code>On</code>
-	for. A message for an event with no listener never reaches it.
+	any listener. It runs for every message addressed to this carrier, including
+	events nothing has an <code>On</code> for, which is why renaming one onto an event
+	you do listen for works.
 </p>
 
 <div class="table-wrap">
@@ -1441,7 +1462,7 @@ t.phase = "fighting"</code></pre>
 	them with <a href="#forcetable"><code>ForceTable</code></a>.
 </p>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Give a staged table one id. Capturing the same table under a second id replaces
@@ -1480,7 +1501,7 @@ t.phase = "fighting"</code></pre>
 -- A client asking for it now is refused.</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		This does not stop replication. Clients already holding the table keep getting
@@ -1651,6 +1672,8 @@ minigame:Destroy()</code></pre>
 		<tr><td><code>Emit</code>, <code>Broadcast</code> and friends</td><td>Nothing happens. No error.</td></tr>
 		<tr><td><code>Call</code>, <code>CallTo</code></td><td><code>nil</code>, straight away.</td></tr>
 		<tr><td><code>Handshake</code></td><td><code>false</code>.</td></tr>
+		<tr><td><code>Revoke</code></td><td><code>0</code>, and nothing is changed.</td></tr>
+		<tr><td><code>On</code></td><td>Nothing happens. No listener is registered, and your callback is not kept.</td></tr>
 		<tr><td><code>Init</code></td><td>Nothing happens.</td></tr>
 		<tr><td>Anything on the wrong side</td><td>Still errors. The side check runs first.</td></tr>
 	</tbody>
@@ -1688,13 +1711,13 @@ minigame:Destroy()</code></pre>
 	</li>
 </ul>
 
-<div class="note note--danger">
-	<p class="note__title">Warning</p>
+<div class="note">
+	<p class="note__title">Note</p>
 	<p>
-		Do not reuse a carrier after destroying it. Sending is properly dead, but calling
-		<code>On</code> again is not the no-op you would expect: if you supplied the
-		transformer and it is still alive, the listener really does subscribe and really
-		will fire, on an object you think is gone. Get a new carrier instead.
+		A dropped carrier stays dropped. <code>On</code> returns without registering
+		anything, whether or not the transformer you passed in is still alive, so a
+		listener added after <code>Destroy</code> never fires. There is no way to bring
+		the object back. Build a new carrier when you need the channel again.
 	</p>
 </div>
 
@@ -1703,8 +1726,13 @@ minigame:Destroy()</code></pre>
 <h2>Errors and warnings</h2>
 
 <p>
-	Errors are raised at your call site. Warnings go to the output window and the message
-	is dropped or the callback skipped.
+	Errors from a carrier method are raised at your call site. The two constructor
+	errors are the exception: <code>ERR_NO_NAME</code> and
+	<code>ERR_NO_TRANSFORMER</code> come out of <code>Pigeon.new</code>, so the
+	traceback lands on Pigeon's own line rather than on yours. The error name is what
+	tells you which one it was. See <a href="pigeon.html#pigeon-new">Pigeon.new</a>.
+	Warnings go to the output window and the message is dropped or the callback
+	skipped.
 </p>
 
 <div class="table-wrap">
@@ -1721,8 +1749,9 @@ minigame:Destroy()</code></pre>
 				<code>BroadcastExcept</code>, <code>CallTo</code>, <code>CreateRoom</code>,
 				<code>DestroyRoom</code>, <code>JoinRoom</code>, <code>LeaveRoom</code>,
 				<code>SendToRoom</code>, <code>UseHandshake</code>,
-				<code>CaptureTable</code>, <code>ReleaseTable</code> or
-				<code>ForceTable</code> called on the client.
+				<code>Revoke</code>, <code>CaptureTable</code>,
+				<code>ReleaseTable</code> or <code>ForceTable</code> called on the
+				client.
 			</td>
 		</tr>
 		<tr>

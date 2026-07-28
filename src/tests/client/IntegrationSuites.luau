@@ -75,38 +75,53 @@ return function(TestKit: any, Fixtures: any): { any }
 		t.eq(Fixtures.serverEntries("Echo.Emit")[1].n, 0)
 	end)
 
-	outbound:known(
-		"a nil in the middle of the payload is preserved",
-		"the { [1] = ..., n = count } envelope mixes integer and string keys, so Roblox strips n in transit and the payload truncates at the first nil",
-		function(t)
-			Fixtures.serverForget("Echo.Emit")
-			echo:Emit("Emit", 1, nil, 3)
+	outbound:test("a nil in the middle of the payload is preserved", function(t)
+		Fixtures.serverForget("Echo.Emit")
+		echo:Emit("Emit", 1, nil, 3)
 
-			t.eventually(function()
-				return Fixtures.serverCount("Echo.Emit") == 1
-			end, 5)
+		t.eventually(function()
+			return Fixtures.serverCount("Echo.Emit") == 1
+		end, 5)
 
-			local entry = Fixtures.serverEntries("Echo.Emit")[1]
-			t.eq(entry.n, 3, "the packed arity must survive the wire")
-			local ok, why = Protocol.same(entry, { 1, Protocol.NIL, 3 }, 3)
-			t.ok(ok, why)
-		end
-	)
+		local entry = Fixtures.serverEntries("Echo.Emit")[1]
+		t.eq(entry.n, 3, "the arity must survive the wire")
+		local ok, why = Protocol.same(entry, { 1, Protocol.NIL, 3 }, 3)
+		t.ok(ok, why)
+	end)
 
-	outbound:known(
-		"a trailing nil is preserved",
-		"same dropped n; with no hole in the payload this isolates the cause to the mixed-key envelope rather than to the nil itself",
-		function(t)
-			Fixtures.serverForget("Echo.Emit")
-			echo:Emit("Emit", "a", nil)
+	outbound:test("a trailing nil is preserved", function(t)
+		Fixtures.serverForget("Echo.Emit")
+		echo:Emit("Emit", "a", nil)
 
-			t.eventually(function()
-				return Fixtures.serverCount("Echo.Emit") == 1
-			end, 5)
+		t.eventually(function()
+			return Fixtures.serverCount("Echo.Emit") == 1
+		end, 5)
 
-			t.eq(Fixtures.serverEntries("Echo.Emit")[1].n, 2, "a trailing nil cannot be truncated away")
-		end
-	)
+		t.eq(Fixtures.serverEntries("Echo.Emit")[1].n, 2, "a trailing nil cannot be truncated away")
+	end)
+
+	outbound:test("a leading nil is preserved", function(t)
+		Fixtures.serverForget("Echo.Emit")
+		echo:Emit("Emit", nil, "b", "c")
+
+		t.eventually(function()
+			return Fixtures.serverCount("Echo.Emit") == 1
+		end, 5)
+
+		local ok, why = Protocol.same(Fixtures.serverEntries("Echo.Emit")[1], { Protocol.NIL, "b", "c" }, 3)
+		t.ok(ok, why)
+	end)
+
+	outbound:test("a payload of nothing but nils is preserved", function(t)
+		Fixtures.serverForget("Echo.Emit")
+		echo:Emit("Emit", nil, nil, nil)
+
+		t.eventually(function()
+			return Fixtures.serverCount("Echo.Emit") == 1
+		end, 5)
+
+		t.eq(Fixtures.serverEntries("Echo.Emit")[1].n, 3)
+	end)
 
 	outbound:test("a payload with no nils keeps its arity", function(t)
 		Fixtures.serverForget("Echo.Emit")
@@ -161,13 +176,13 @@ return function(TestKit: any, Fixtures: any): { any }
 		t.eq(second, "and back")
 	end)
 
-	requests:diagnostic("a nil among the returned values survives", function(t)
+	requests:test("a nil among the returned values survives", function(t)
 		local first, second, third = echo:Call("Trailing")
 
 		t.log(string.format("got (%s, %s, %s)", tostring(first), tostring(second), tostring(third)))
 		t.eq(first, "first")
 		t.eq(second, nil)
-		t.eq(third, "third", "the response arity was recovered from # rather than from n")
+		t.eq(third, "third")
 	end)
 
 	requests:test("a listener returning nothing answers with nothing", function(t)
@@ -258,21 +273,17 @@ return function(TestKit: any, Fixtures: any): { any }
 		t.eq(entry.values[1], "solo")
 	end)
 
-	inbound:known(
-		"a nil in the middle of a broadcast is preserved",
-		"the same stripped n as on the outbound path -- the envelope is built by the same prepare() in both directions, so server to client truncates at the first nil too",
-		function(t)
-			inbox:reset("Echo.Recv")
-			serverBroadcast(Protocol.Echo, "Recv", "a", nil, "c")
+	inbound:test("a nil in the middle of a broadcast is preserved", function(t)
+		inbox:reset("Echo.Recv")
+		serverBroadcast(Protocol.Echo, "Recv", "a", nil, "c")
 
-			t.eventually(function()
-				return inbox:count("Echo.Recv") == 1
-			end, 5)
+		t.eventually(function()
+			return inbox:count("Echo.Recv") == 1
+		end, 5)
 
-			local ok, why = Protocol.same(inbox:at("Echo.Recv"), { "a", Protocol.NIL, "c" }, 3)
-			t.ok(ok, why)
-		end
-	)
+		local ok, why = Protocol.same(inbox:at("Echo.Recv"), { "a", Protocol.NIL, "c" }, 3)
+		t.ok(ok, why)
+	end)
 
 	inbound:test("BroadcastExcept leaves this client out", function(t)
 		inbox:reset("Echo.Recv")
@@ -827,6 +838,29 @@ return function(TestKit: any, Fixtures: any): { any }
 		end, 6)
 		t.eq(view.stats.mp, 50, "a nested patch must not clobber its siblings")
 	end, 25)
+
+	staged:test("a nested view held by the client follows the server replacing it", function(t)
+		local view = tables:RequestTable(Protocol.TableMain):GetTable()
+
+		local held = view.stats
+		t.eventually(function()
+			return held.hp ~= nil
+		end, 6)
+
+		ask("tableSet", {
+			id = Protocol.TableMain,
+			path = { "stats" },
+			value = { hp = 7, mp = 8, shield = 9 },
+		})
+
+		t.eventually(function()
+			return held.hp == 7
+		end, 6, "a view kept in a variable must follow the whole table being swapped")
+
+		t.eq(held.mp, 8)
+		t.eq(held.shield, 9, "including keys that did not exist before")
+		t.eq(view.stats.hp, 7, "and reading down from the top agrees")
+	end, 30)
 
 	staged:test("a server deletion replicates", function(t)
 		local view = tables:RequestTable(Protocol.TableMain):GetTable()

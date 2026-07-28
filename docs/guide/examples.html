@@ -168,7 +168,7 @@ end)
 scores:Init()</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		Register every <code>On</code> you care about first, then call
@@ -335,14 +335,14 @@ print(view.combat.health)</code></pre>
 	field by field costs one send and not one per field.
 </p>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
-		Read through the top of the view each time, like
-		<code>view.combat.health</code>. Do not keep a nested view in a variable such
-		as <code>local combat = view.combat</code>, because it will not follow the
-		server replacing that whole table. See
-		<a href="known-issues.html">Known Issues</a>.
+		The client's copy is a mirror, so treat it as read only.
+		<code>view.coins = 999</code> on the client changes what that client sees and
+		nothing else, and the next patch touching <code>coins</code> wipes it out. If a
+		client needs something changed, send a message and let the server write. See
+		<a href="staged-tables.html">Staged Tables</a>.
 	</p>
 </div>
 
@@ -450,11 +450,12 @@ chat:Init()
 chat:Emit("Say", "hello")</code></pre>
 </div>
 
-<div class="note">
+<div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
-		Middleware only runs for events that already have a listener. Renaming an
-		event nothing listens for does not make it arrive. See
+		Middleware runs for every packet on the channel, including events nothing has
+		a listener for. Renaming one onto an event you do listen for is what makes it
+		arrive, and renaming it onto a name nothing listens for is what drops it. See
 		<a href="middleware.html">Middleware</a>.
 	</p>
 </div>
@@ -537,6 +538,11 @@ local transformer = Pigeon.Transformer("RawExample")
 Network.Receive("raw-event", function(transformerId, data)
 	print("got", data)
 end)
+
+-- Ready is what Init does underneath. The channel is the part of the name before
+-- the NUL byte, and there is none here, so the channel is "raw-event" itself.
+-- Without this the server's Broadcast just sits in the buffer for this client.
+Network.Ready(transformer, "raw-event")
 
 Network.Push(transformer, "raw-event", { hello = true })</code></pre>
 </div>

@@ -353,7 +353,8 @@ shop:Off("Buy")          -- drop every handler for "Buy"</code></pre>
 		object, and something has to let go of it.
 	</li>
 	<li>
-		Do not call <code>On</code> on it afterwards. See the note below.
+		Do not expect <code>On</code> to work on it afterwards. It registers nothing.
+		See the note below.
 	</li>
 </ol>
 
@@ -365,7 +366,7 @@ shop:Off("Buy")          -- drop every handler for "Buy"</code></pre>
 </p>
 
 <div class="api">
-	<pre class="api__sig"><code>Pigeon.Network.Diagnostics() -> {listeners: number, orphaned: number, pending: number, readySeats: number, bufferedPackets: number, readyChannels: number, bufferedChannels: number, outbound: number}</code></pre>
+	<pre class="api__sig"><code>Pigeon.Network.Diagnostics() -> {listeners: number, watchers: number, orphaned: number, pending: number, readySeats: number, bufferedPackets: number, readyChannels: number, bufferedChannels: number, outbound: number}</code></pre>
 </div>
 
 <p>Takes no parameters. Returns one table of counts.</p>
@@ -383,6 +384,7 @@ print(counts.listeners, counts.pending, counts.bufferedPackets)</code></pre>
 	</thead>
 	<tbody>
 		<tr><td><code>listeners</code></td><td>Event names with at least one transport binding.</td></tr>
+		<tr><td><code>watchers</code></td><td>Channel watchers, added up across every channel. One per live carrier.</td></tr>
 		<tr><td><code>orphaned</code></td><td>Packets held because nothing was listening yet.</td></tr>
 		<tr><td><code>pending</code></td><td>Requests still waiting for an answer.</td></tr>
 		<tr><td><code>readySeats</code></td><td>Player and channel pairs that have called <code>Init</code>.</td></tr>
@@ -400,17 +402,17 @@ print(counts.listeners, counts.pending, counts.bufferedPackets)</code></pre>
 	on their own, so give it a few seconds before you decide something is stuck.
 </p>
 
-<h2>Known issue</h2>
+<h2>On after Destroy</h2>
 
-<div class="note note--danger">
-	<p class="note__title">Warning</p>
+<div class="note">
+	<p class="note__title">Note</p>
 	<p>
-		Calling <code>On</code> on a carrier you already destroyed can register a live
-		subscription on a dead object. It is not blocked and it does not warn. It happens
-		when the carrier was built on a transformer you passed in, because
-		<code>Destroy</code> leaves that transformer alone and a live transformer is the
-		only thing <code>On</code> checks. Do not reuse a destroyed carrier. Build a new
-		one. See <a href="known-issues.html">Known Issues</a>.
+		<code>On</code> returns straight away on a dropped carrier. No listener is
+		registered, nothing is bound underneath, and the callback you passed is not kept,
+		so it cannot hold anything alive. That holds whether or not the transformer you
+		passed in is still alive. There is no way to bring a dropped carrier back, so
+		build a new one when you need the channel again. See
+		<a href="known-issues.html">Known Issues</a>.
 	</p>
 </div>
 

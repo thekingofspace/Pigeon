@@ -85,6 +85,24 @@ local Network = Pigeon.Network</code></pre>
 	the client has to call <code>Ready(transformer, "Update")</code> to hear it.
 </p>
 
+<h3>What data is</h3>
+
+<p>
+	<code>data</code> is one value and <code>Network</code> never looks inside it. A carrier
+	fills it with a plain list of the arguments you passed, one per slot, with no holes.
+	That matters because a list with a gap in it loses its length on the way across, and
+	the far side would stop reading at the first hole.
+</p>
+
+<p>
+	So an argument that was <code>nil</code> does not travel as a hole. The carrier swaps
+	it for a private sentinel string on the way out and turns it back into
+	<code>nil</code> on arrival, which is why
+	<code>Emit("Hit", 1, nil, 6)</code> reaches the other side as three arguments. Return
+	values from a listener are packed the same way. See
+	<a href="../guide/sending.html#arguments">Arguments</a>.
+</p>
+
 <div class="flow">
 	<p class="flow__label">A request at this level</p>
 	<div class="flow__row">
@@ -393,10 +411,10 @@ stop()</code></pre>
 <div class="note">
 	<p class="note__title">Note</p>
 	<p>
-		<code>data</code> is the raw payload. A carrier packs its arguments into one table
-		with an <code>n</code> field, so listening to a carrier's traffic here gives you
-		that table rather than the arguments themselves, and the carrier's middleware does
-		not run.
+		<code>data</code> is the raw payload. A carrier packs its arguments into a gapless
+		list, so listening to a carrier's traffic here hands you that list rather than the
+		arguments themselves, and the carrier's middleware does not run. A slot holding
+		the sentinel string is an argument that was <code>nil</code>.
 	</p>
 </div>
 
@@ -436,7 +454,47 @@ stop()</code></pre>
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>local stop = Network.ReceiveChannel("Shop", function(event, player, transformerId, data)
 	print(player.Name, "sent", event, "which nothing is bound to")
-end)</code></pre>
+end)
+
+-- Later.
+stop()</code></pre>
+</div>
+
+<h4>How it differs from Receive</h4>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th></th><th><code>Receive</code></th><th><code>ReceiveChannel</code></th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Bound to</td>
+			<td>One wire event name.</td>
+			<td>A whole channel, so every name on it at once.</td>
+		</tr>
+		<tr>
+			<td>What it sees</td>
+			<td>Every packet with that name.</td>
+			<td>Only packets no <code>Receive</code> listener claimed.</td>
+		</tr>
+		<tr>
+			<td>Callback gets</td>
+			<td><code>player, transformerId, data, promiseId?</code> on the server, one less on the client.</td>
+			<td>The wire event name, then that same list.</td>
+		</tr>
+		<tr>
+			<td>Replay on subscribe</td>
+			<td>What was held for that one name.</td>
+			<td>What was held for every name on the channel.</td>
+		</tr>
+		<tr>
+			<td>After the callback</td>
+			<td>The packet was delivered.</td>
+			<td>The packet is taken, so it stops being held.</td>
+		</tr>
+	</tbody>
+</table>
 </div>
 
 <h4>Details worth knowing</h4>
@@ -445,6 +503,8 @@ end)</code></pre>
 	<li>A listener wins. If any <code>Receive</code> callback is bound to the exact wire name, watchers do not run for that packet, so nothing is ever delivered twice.</li>
 	<li>Anything already held for this channel is replayed to your callback the moment you subscribe, the same as <code>Receive</code> does per name.</li>
 	<li>A packet a watcher takes is no longer orphaned. Holding it or dropping it is now your problem, and this is exactly what a carrier does with it.</li>
+	<li>Watchers do not compete. Every watcher on the channel gets the packet, so adding one to a channel a carrier already owns does not take anything away from that carrier.</li>
+	<li>Each callback runs in its own <code>task.spawn</code> with no <code>pcall</code> around it, and registering the same function twice means disconnecting twice. Exactly like <code>Receive</code>.</li>
 	<li>This is how a carrier runs its incoming middleware over events nothing has bound. See <a href="../guide/middleware.html">Middleware</a>.</li>
 </ul>
 
@@ -476,7 +536,7 @@ end)</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="client">Client</span>
-<pre><code>Network.Push(transformer, "Shop\0Buy", { n = 1, "sword" })</code></pre>
+<pre><code>Network.Push(transformer, "Shop\0Buy", { "sword" })</code></pre>
 </div>
 
 <p>
@@ -866,7 +926,7 @@ print(d.listeners, d.pending, d.bufferedPackets)</code></pre>
 		<tr>
 			<td><code>outbound</code></td>
 			<td>Client</td>
-			<td>Packets in the client's outbox waiting for their ref to replicate. Always 0 on the server.</td>
+			<td>Packets in the client's outbox waiting for their ref to replicate, readiness packets included. Always 0 on the server, which never queues a send.</td>
 		</tr>
 	</tbody>
 </table>
@@ -911,9 +971,14 @@ print(d.listeners, d.pending, d.bufferedPackets)</code></pre>
 			<td>You are sending to a channel clients never open. It cannot grow without bound, but every packet in there is a wasted send.</td>
 		</tr>
 		<tr>
-			<td><code>readyChannels</code> and <code>bufferedChannels</code></td>
-			<td>Settle at the number of channels your game has.</td>
-			<td>Channel names are being generated rather than fixed.</td>
+			<td><code>readyChannels</code></td>
+			<td>Settles at the number of channels your game has, once the first client is up.</td>
+			<td>Channel names are being generated rather than fixed. Same cause as <code>readySeats</code>, counted once per name instead of once per name and player.</td>
+		</tr>
+		<tr>
+			<td><code>bufferedChannels</code></td>
+			<td>0, alongside <code>bufferedPackets</code>. A channel leaves the list as soon as its last held packet does.</td>
+			<td>The same channels are being sent to and never opened. Read it next to <code>bufferedPackets</code>: many packets on one channel is a client that never readied, one packet on many channels is a naming problem.</td>
 		</tr>
 		<tr>
 			<td><code>outbound</code></td>

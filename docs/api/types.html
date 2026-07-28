@@ -141,6 +141,7 @@ view.round = 2</code></pre>
 
 	UseHandshake: (self: PigeonCarrier, Callback: (player: Player, ...any) -&gt; boolean) -&gt; (),
 	Approved: (self: PigeonCarrier, Targets: {Player}?) -&gt; {Player},
+	Revoke: (self: PigeonCarrier, Targets: {Player} | Player) -&gt; number,
 
 	--Client
 	Emit: (self: PigeonCarrier, event: string, ...any) -&gt; (),
@@ -250,9 +251,8 @@ shop:Init()</code></pre>
 <p>
 	Renaming does a different job in each direction. Outgoing, the new name is what
 	travels, so the other machine has to listen for that name. Incoming, the new name
-	picks which of your listeners runs, and the transport only delivers events you
-	already bound with <code>On</code>, so the original name still needs a listener for
-	the packet to reach middleware at all.
+	picks which of your listeners runs, and the carrier hands middleware every packet on
+	its channel, so the original name does not need a listener of its own.
 </p>
 
 <pre><code>local shop = Pigeon.new("Shop")
@@ -278,9 +278,10 @@ shop:UseOutgoing(rename)</code></pre>
 	<p>
 		<code>player</code> is not filled in as often as you might expect on the way out.
 		Incoming on the server it is the player who sent the packet. Outgoing on the
-		server only <code>CallTo</code> fills it in, with the player being asked, and the
-		broadcast methods leave it <code>nil</code>. On the client it is always
-		<code>nil</code>.
+		server two calls fill it in: <code>CallTo</code>, with the player being asked,
+		and <code>Revoke</code>, with the player being revoked on the reserved
+		<code>__pigeon_table_revoke</code> message it sends them. The broadcast methods
+		leave it <code>nil</code>. On the client it is always <code>nil</code>.
 	</p>
 </div>
 

@@ -8,6 +8,7 @@ local ERR_BEHAVIOUR = "ERR_STAGE_BEHAVIOUR | Staged tables carry data, not behav
 local ERR_METATABLE = "ERR_STAGE_METATABLE | Staged tables carry plain Roblox data only; got a table with a metatable at %s."
 local ERR_CYCLE = "ERR_STAGE_CYCLE | Staged tables cannot contain cycles; %s refers back into itself."
 local ERR_TABLE_KEY = "ERR_STAGE_TABLE_KEY | Staged table keys must be values, not tables; got one at %s."
+local ERR_DETACHED = "ERR_STAGE_DETACHED | The table at %s is no longer part of this staged table."
 
 local SERIALIZABLE: { [string]: boolean } = {
 	["nil"] = true,
@@ -144,7 +145,11 @@ local function descend(root: { [any]: any }, path: { any }): ({ [any]: any }, an
 	return node, path[#path]
 end
 
-local function wrap(store: { [any]: any }, onWrite: ({ any }, any) -> (), prefix: { any }): { [any]: any }
+local function empty()
+	return nil
+end
+
+local function wrap(resolve: () -> any, onWrite: ({ any }, any) -> (), prefix: { any }): { [any]: any }
 	local children: { [any]: any } = setmetatable({}, { __mode = "v" }) :: any
 
 	local function pathTo(key: any): { any }
@@ -157,31 +162,52 @@ local function wrap(store: { [any]: any }, onWrite: ({ any }, any) -> (), prefix
 	local meta = getmetatable(proxy)
 
 	meta.__index = function(_, key: any): any
+		local store = resolve()
+		if type(store) ~= "table" then
+			return nil
+		end
+
 		local value = store[key]
 		if type(value) ~= "table" then
 			return value
 		end
+
 		local child = children[key]
 		if not child then
-			child = wrap(value, onWrite, pathTo(key))
+			child = wrap(function()
+				local current = resolve()
+				if type(current) ~= "table" then
+					return nil
+				end
+				return current[key]
+			end, onWrite, pathTo(key))
 			children[key] = child
 		end
 		return child
 	end
 
 	meta.__newindex = function(_, key: any, value: any)
+		local store = resolve()
+		if type(store) ~= "table" then
+			error(string.format(ERR_DETACHED, describePath(prefix)), 0)
+		end
+
 		local path = pathTo(key)
 		local copy = rawCopy(value, path)
-		children[key] = nil
 		store[key] = copy
 		onWrite(path, encode(copy))
 	end
 
 	meta.__len = function()
-		return #store
+		local store = resolve()
+		return if type(store) == "table" then #store else 0
 	end
 
 	meta.__iter = function()
+		local store = resolve()
+		if type(store) ~= "table" then
+			return empty
+		end
 		return next, store
 	end
 
@@ -261,7 +287,9 @@ return function(initial: { [any]: any }?): types.StageTable
 	self._queued = {}
 	self._flushing = false
 
-	self._proxy = wrap(self._store, function(path: { any }, value: any)
+	self._proxy = wrap(function()
+		return self._store
+	end, function(path: { any }, value: any)
 		if self._onWrite then
 			self._onWrite(path, value)
 		end

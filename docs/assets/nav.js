@@ -16,7 +16,7 @@ window.PIGEON_SIDEBARS = [
 						link: "api/carrier.html",
 						text: "Carrier",
 						keywords:
-							"carrier on off emit call broadcast broadcastto broadcastexcept callto init ping handshake usehandshake approved createroom destroyroom joinroom leaveroom sendtoroom useincoming useoutgoing capturetable releasetable forcetable requesttable destroy unreliable timeout",
+							"carrier on off emit call broadcast broadcastto broadcastexcept callto init ping handshake usehandshake approved revoke createroom destroyroom joinroom leaveroom sendtoroom useincoming useoutgoing capturetable releasetable forcetable requesttable destroy unreliable timeout",
 					},
 					{
 						link: "api/transformer.html",
@@ -154,7 +154,8 @@ window.PIGEON_SIDEBARS = [
 					{
 						link: "guide/known-issues.html",
 						text: "Known Issues",
-						keywords: "bugs known issues limitations nil arity stale view",
+						keywords:
+							"bugs known issues limitations sharp edges approved destroyed carrier handshake guard capture detached recently fixed passing nil nested view",
 					},
 					{
 						link: "guide/credits.html",

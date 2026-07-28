@@ -337,6 +337,158 @@ return function(TestKit: any, Fixtures: any): { any }
 		t.eq(#carrier:Approved({ alice }), 1, "with the guard gone, Approved stops filtering")
 	end)
 
+	handshake:test("Revoke turns a member out of every room on the carrier", function(t)
+		local carrier = Pigeon.new(unique("RevokeRooms"), {})
+		local alice, bob = fakePlayer("Alice"), fakePlayer("Bob")
+
+		carrier:UseHandshake(function()
+			return true
+		end)
+		;(carrier :: any)._authed[alice] = true
+		;(carrier :: any)._authed[bob] = true
+
+		carrier:CreateRoom("lobby", { alice, bob })
+		carrier:CreateRoom("match", { alice })
+
+		carrier:Revoke(alice)
+
+		t.same(roomOf(carrier, "lobby"), { bob }, "only the revoked player leaves")
+		t.eq(#roomOf(carrier, "match"), 0)
+
+		carrier:Destroy()
+	end)
+
+	handshake:test("a guard that throws does not leave a member admitted", function(t)
+		local carrier = Pigeon.new(unique("GuardThrows"), {})
+		local alice = fakePlayer("Alice")
+
+		carrier:UseHandshake(function()
+			return true
+		end)
+		;(carrier :: any)._authed[alice] = true
+		t.eq(#carrier:Approved({ alice }), 1)
+
+		carrier:UseHandshake(function()
+			error("the guard blew up")
+		end)
+		;(carrier :: any)._authed[alice] = true
+
+		local listener = (carrier :: any)._listeners["__pigeon_handshake"][1]
+		local answer = listener(alice)
+
+		t.eq(answer, false, "the client is told no")
+		t.eq(
+			(carrier :: any)._authed[alice],
+			nil,
+			"and the server must agree, or it would keep sending to someone it just refused"
+		)
+
+		carrier:Destroy()
+	end)
+
+	handshake:test("losing an admission turns the member out of rooms and tables", function(t)
+		local carrier = Pigeon.new(unique("RejectEvicts"), {})
+		local alice = fakePlayer("Alice")
+		local allow = true
+
+		carrier:UseHandshake(function()
+			return allow
+		end)
+
+		local staged = Pigeon.StagedTable({ secret = 1 })
+		carrier:CaptureTable("secret", staged)
+
+		;(carrier :: any)._authed[alice] = true
+		carrier:JoinRoom("lobby", alice)
+		;(staged :: any)._subscribers[alice] = true
+
+		allow = false
+		local listener = (carrier :: any)._listeners["__pigeon_handshake"][1]
+		t.eq(listener(alice), false)
+
+		t.eq((carrier :: any)._authed[alice], nil)
+		t.eq(#roomOf(carrier, "lobby"), 0, "a refused member should not stay in the room")
+		t.eq((staged :: any)._subscribers[alice], nil, "nor stay subscribed to the table")
+
+		carrier:Destroy()
+	end)
+
+	handshake:test("a guarded carrier refuses to put an unapproved player in a room", function(t)
+		local carrier = Pigeon.new(unique("RoomNeedsApproval"), {})
+		local alice = fakePlayer("Alice")
+
+		carrier:UseHandshake(function()
+			return true
+		end)
+
+		local message = t.throws(function()
+			carrier:JoinRoom("match", alice)
+		end, "ERR_NOT_APPROVED")
+		t.matches(message, "Alice", "the error should name the player")
+		t.matches(message, "match", "and the room")
+
+		t.throws(function()
+			carrier:CreateRoom("lobby", { alice })
+		end, "ERR_NOT_APPROVED")
+
+		carrier:Destroy()
+	end)
+
+	handshake:test("an approved player may be put in a room", function(t)
+		local carrier = Pigeon.new(unique("RoomApproved"), {})
+		local alice = fakePlayer("Alice")
+
+		carrier:UseHandshake(function()
+			return true
+		end)
+		;(carrier :: any)._authed[alice] = true
+
+		t.noThrow(function()
+			carrier:JoinRoom("match", alice)
+			carrier:CreateRoom("lobby", { alice })
+		end)
+		t.eq(#roomOf(carrier, "match"), 1)
+
+		carrier:Destroy()
+	end)
+
+	handshake:test("a refused room call changes nothing", function(t)
+		local carrier = Pigeon.new(unique("RoomAtomic"), {})
+		local alice, bob = fakePlayer("Alice"), fakePlayer("Bob")
+
+		carrier:UseHandshake(function()
+			return true
+		end)
+		;(carrier :: any)._authed[alice] = true
+
+		carrier:JoinRoom("match", alice)
+
+		t.throws(function()
+			carrier:JoinRoom("match", { alice, bob })
+		end, "ERR_NOT_APPROVED")
+
+		t.same(roomOf(carrier, "match"), { alice }, "one bad name must not half apply the call")
+
+		t.throws(function()
+			carrier:CreateRoom("fresh", { alice, bob })
+		end, "ERR_NOT_APPROVED")
+		t.eq(roomOf(carrier, "fresh"), nil, "and must not leave an empty room behind")
+
+		carrier:Destroy()
+	end)
+
+	handshake:test("a carrier with no guard puts anyone in a room", function(t)
+		local carrier = Pigeon.new(unique("RoomNoGuard"), {})
+		local alice = fakePlayer("Alice")
+
+		t.noThrow(function()
+			carrier:JoinRoom("match", alice)
+			carrier:CreateRoom("lobby", { alice })
+		end, "the rule only applies once a channel is guarded")
+
+		carrier:Destroy()
+	end)
+
 	handshake:test("Revoke takes an admission away", function(t)
 		local carrier = Pigeon.new(unique("RevokeOne"), {})
 		local alice, bob = fakePlayer("Alice"), fakePlayer("Bob")

@@ -191,14 +191,42 @@ end)</code></pre>
 <pre><code>local level, currency, unlocked = shop:Call("Stats")</code></pre>
 </div>
 
+<h3>Returning nil</h3>
+
+<p>
+	<code>nil</code> is allowed anywhere in that list. Return <code>1, nil, 6</code> and
+	the caller receives <code>1, nil, 6</code>. The list is not cut short and the values
+	after the <code>nil</code> do not shift up.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>shop:On("Stats", function(player)
+	return 1, nil, 6
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local a, b, c = shop:Call("Stats")
+
+print(a, b, c)  --> 1 nil 6</code></pre>
+</div>
+
+<p>
+	Replies get the same treatment as
+	<a href="sending.html#sending-nil">arguments</a>: each <code>nil</code> is swapped
+	for a private marker on the way out and restored on arrival, so the count is exact.
+	Leading, middle and trailing nils all survive, and so does a listener that returns
+	nothing but nils.
+</p>
+
 <div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
-		Do not return <code>nil</code> in the middle of the list. Returns are packed the
-		same way arguments are, and the list stops at the first <code>nil</code>, so
-		<code>return 1, nil, 3</code> arrives as a single value. Return a stand-in such as
-		<code>false</code>, or one table with named keys. See
-		<a href="known-issues.html">Known Issues</a>.
+		This covers the returned values themselves, not what is inside them. A
+		<code>nil</code> in a table you return is still a hole in that table. If you need
+		a missing value inside a table, use an explicit key and leave it out.
 	</p>
 </div>
 
@@ -398,8 +426,9 @@ end)</code></pre>
 <h3>nil is not proof of failure</h3>
 
 <p>
-	A listener that returns nothing also gives you <code>nil</code>. You cannot tell
-	that apart from a timeout. When the difference matters, return an explicit flag.
+	A listener that returns nothing gives you <code>nil</code>, and so does one that
+	returns <code>nil</code> on purpose. You cannot tell either apart from a timeout.
+	When the difference matters, return an explicit flag.
 </p>
 
 <div class="code-block">

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Known Issues | Pigeon</title>
-<meta name="description" content="The confirmed bugs in Pigeon, why each one happens, and what to write instead until they are fixed.">
+<meta name="description" content="No bugs are known in the current code. The sharp edges that work as intended, and the ones that used to be bugs and are fixed.">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
 </head>
@@ -17,164 +17,16 @@
 <h1>Known Issues</h1>
 
 <p class="lead">
-	Two bugs are confirmed in the current code. Each one is listed here with what
-	causes it and what to write instead. Both have a workaround you can use today.
-</p>
-
-<div class="table-wrap">
-<table>
-	<thead>
-		<tr><th>Issue</th><th>Affects</th><th>Short answer</th></tr>
-	</thead>
-	<tbody>
-		<tr>
-			<td>An argument list stops at the first <code>nil</code></td>
-			<td>Both directions</td>
-			<td>Do not send <code>nil</code>.</td>
-		</tr>
-		<tr>
-			<td>A nested view you hold goes stale</td>
-			<td>Client, staged tables</td>
-			<td>Read down from the top view each time.</td>
-		</tr>
-	</tbody>
-</table>
-</div>
-
-<h2>1. An argument list stops at the first nil</h2>
-
-<p>
-	Send a <code>nil</code> in the middle of an argument list and everything from that
-	point on is lost. The far side gets only the arguments before it.
-</p>
-
-<div class="code-block">
-	<span class="code-block__label" data-side="client">Client</span>
-<pre><code>local echo = Pigeon.new("Echo")
-
-echo:Emit("Values", 1, nil, 3)</code></pre>
-</div>
-
-<div class="code-block">
-	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>local echo = Pigeon.new("Echo")
-
-echo:On("Values", function(player, ...)
-	print(select("#", ...))  --&gt; 1
-	print(...)               --&gt; 1
-end)</code></pre>
-</div>
-
-<p>
-	A trailing <code>nil</code> goes the same way. <code>Emit("Values", "a", nil)</code>
-	arrives as one argument, not two.
-</p>
-
-<h4>Why it happens</h4>
-
-<p>
-	Pigeon packs your arguments into one table and puts the count beside them under the
-	key <code>n</code>. That table has number keys and one string key, and Roblox strips
-	the string key when it sends the table across. With <code>n</code> gone the receiving
-	side falls back to the length of the list, and a list with a gap in it is only as
-	long as its first gap.
-</p>
-
-<h4>What to do instead</h4>
-
-<p>Pick whichever of these fits. All three work today.</p>
-
-<div class="code-block">
-	<span class="code-block__label" data-side="client">Client</span>
-<pre><code>-- 1. Send a stand-in value rather than nil.
-echo:Emit("Values", 1, false, 3)
-
--- 2. Send a sentinel you agree on, if false is a real value for you.
-local NONE = "\0none"
-echo:Emit("Values", 1, NONE, 3)
-
--- 3. Wrap the arguments in one table with named keys.
-echo:Emit("Values", { first = 1, third = 3 })</code></pre>
-</div>
-
-<p>
-	The third one is the tidiest. A key you leave out is not a gap in a list, and reading
-	it back on the far side gives you <code>nil</code> anyway.
-</p>
-
-<div class="note">
-	<p class="note__title">Note</p>
-	<p>
-		This applies both ways. Client to server and server to client build the argument
-		table with the same code, so both truncate. Replies are packed the same way, so a
-		listener that returns <code>1, nil, 3</code> answers a <code>Call</code> with just
-		<code>1</code>.
-	</p>
-</div>
-
-<h2>2. A nested view does not follow its table being replaced</h2>
-
-<p>
-	On the client, a staged table gives you a view. Read a nested table out of it, hold on
-	to that, and it stops updating the moment the server replaces the whole table under it.
-</p>
-
-<div class="code-block">
-	<span class="code-block__label" data-side="client">Client</span>
-<pre><code>local data = Pigeon.new("PlayerData"):Init()
-local view = data:RequestTable("me"):GetTable()
-
-local stats = view.stats
-print(stats.health)   --&gt; 100
-
--- The server replaces the whole stats table with a new one.
-
-print(stats.health)   --&gt; still 100</code></pre>
-</div>
-
-<h4>Why it happens</h4>
-
-<p>
-	A server update is written straight into the data underneath the view. The nested view
-	you are holding still points at the old table, and nothing tells it to look again.
-	Nested views are cached by key and the cache is weak, so one you do not hold on to is
-	thrown away and rebuilt from the current data. One you hold stays alive, old contents
-	and all.
-</p>
-
-<h4>What to do instead</h4>
-
-<p>Read down from the top level view each time, and do not keep the middle of the path.</p>
-
-<div class="code-block">
-	<span class="code-block__label" data-side="client">Client</span>
-<pre><code>-- Do this.
-print(view.stats.health)
-
--- Not this.
-local stats = view.stats
-print(stats.health)</code></pre>
-</div>
-
-<div class="note note--warn">
-	<p class="note__title">Careful</p>
-	<p>
-		While you are still holding <code>stats</code>, even <code>view.stats.health</code>
-		hands you the stale one, because that is the view the cache is holding. Let the
-		local go and the next read builds a fresh one.
-	</p>
-</div>
-
-<p>
-	This only bites on the receiving side. A write made through the view on the server
-	drops the cached nested view for that key as part of the write, so the server's own
-	reads are always current.
+	There are no known bugs in the current code. What is left is the record: the sharp
+	edges that are doing what they were written to do and catch people out anyway, and
+	the things that used to be listed here as bugs and are now fixed.
 </p>
 
 <h2>Not bugs, but worth knowing</h2>
 
 <p>
-	Four more things catch people out. Each one is the code doing what it was written to do.
+	Five behaviours surprise people. Each one is deliberate, and each one has a plain way
+	to work with it.
 </p>
 
 <h3>Approved on a destroyed carrier returns everyone</h3>
@@ -250,7 +102,9 @@ end)</code></pre>
 <p>
 	Clients are not told when the guard changes. They find out by calling
 	<code>Handshake</code> again, and until they do the channel carries nothing for them.
-	See <a href="handshakes.html">Handshakes</a>.
+	<a href="handshakes.html#revoke">Revoke</a> shuts one player out without touching the
+	guard, but it cannot take the guard off either. See
+	<a href="handshakes.html">Handshakes</a>.
 </p>
 
 <h3>Only the last carrier to capture a staged table replicates it</h3>
@@ -277,6 +131,99 @@ match:CaptureTable("scores", scores)   -- lobby stops replicating it</code></pre
 	Capture each staged table on one carrier and leave it there. See
 	<a href="staged-tables.html">Staged Tables</a>.
 </p>
+
+<h3>Writing through a view whose table is gone raises an error</h3>
+
+<p>
+	A nested view points at a slot, not at a table, so it survives the table in that slot
+	being replaced. If the slot is emptied instead, there is nothing to write into. Reads
+	answer <code>nil</code>, the length is <code>0</code> and a loop runs zero times, but a
+	write errors rather than resurrecting a table nobody asked for.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local staged = Pigeon.StagedTable({ stats = { health = 100 } })
+local view = staged:GetTable()
+
+local stats = view.stats
+view.stats = nil          -- the whole table goes
+
+print(stats.health)       --&gt; nil
+print(#stats)             --&gt; 0
+
+stats.health = 100        -- errors</code></pre>
+</div>
+
+<pre><code>ERR_STAGE_DETACHED | The table at root.stats is no longer part of this staged table.</code></pre>
+
+<p>
+	The view is not spent. Put a table back at that key and the one you are holding reads
+	it, so this only ever bites in the window where the key holds nothing.
+</p>
+
+<h2>Recently fixed</h2>
+
+<p>
+	These three were listed here as bugs. If you wrote code around any of them, you can
+	stop.
+</p>
+
+<h3>Passing nil works</h3>
+
+<p>
+	An argument list used to stop at the first <code>nil</code>, so
+	<code>Emit("Values", 1, nil, 3)</code> arrived as a single argument, and so did a reply
+	of <code>1, nil, 3</code>. Arguments now cross the wire with a stand-in in place of each
+	<code>nil</code> and the far side puts the <code>nil</code> back, so leading, middle,
+	trailing and all-nil lists arrive intact in every direction, replies included. A
+	<code>nil</code> inside a table you pass is still a hole in that table, which is how
+	Roblox has always handled it, so use explicit keys if you need one.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>echo:Emit("Values", 1, nil, 3)   --&gt; the server gets 1, nil, 3</code></pre>
+</div>
+
+<h3>On no longer revives a destroyed carrier</h3>
+
+<p>
+	<code>On</code> used to install a live transport listener on a carrier that was already
+	destroyed, because the only thing it checked was the transformer, and a transformer you
+	passed in survives <code>carrier:Destroy()</code>. Nothing would ever disconnect that
+	listener. <code>On</code> now returns straight away on a dropped carrier, so calling it
+	after <code>Destroy</code> does nothing at all.
+</p>
+
+<h3>A nested view follows its table being replaced</h3>
+
+<p>
+	A view you read out of another view used to hold the inner table itself. When a patch
+	or a snapshot replaced that whole table, the view you were still holding kept showing
+	the old contents, and the advice was to read down from the root every time and never
+	keep the middle of a path in a variable.
+</p>
+
+<p>
+	A view now holds the way to find its table again rather than the table, and asks its
+	parent for the value at its key on every read, write, length check and loop. So
+	<code>local stats = view.stats</code> keeps working after the server replaces the whole
+	<code>stats</code> table, including keys that were not there before, at any depth, and
+	through a fresh snapshot as much as a patch.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local view = data:RequestTable("me"):GetTable()
+
+local stats = view.stats
+print(stats.health)   --&gt; 100
+
+-- The server replaces the whole stats table with a new one.
+
+print(stats.health)   --&gt; the new value</code></pre>
+</div>
 
 <h2>What to read next</h2>
 

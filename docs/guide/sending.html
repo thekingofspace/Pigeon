@@ -54,9 +54,12 @@
 </div>
 
 <p>
-	Registers a handler for an event. Works on the server and on the client. The first
-	<code>On</code> for an event is what wires the channel up underneath, so nothing is
-	listening until you call it.
+	Registers a handler for an event. Works on the server and on the client. The channel
+	itself is wired up when the carrier is built, not by <code>On</code>: a carrier
+	subscribes to its whole channel, so a packet for an event you never bound still
+	reaches it and still runs your incoming
+	<a href="middleware.html">middleware</a>. What <code>On</code> adds is the handler,
+	so until you call it nothing runs for that event.
 </p>
 
 <div class="table-wrap">
@@ -431,6 +434,57 @@ shop:Init()</code></pre>
 	<a href="middleware.html">Middleware</a>.
 </p>
 
+<h3>Sending nil</h3>
+
+<p>
+	A <code>nil</code> argument is carried through exactly as you sent it. It does not
+	cut the list short and the values after it do not shift up. Pigeon swaps every
+	<code>nil</code> for a private marker before the send and turns it back into
+	<code>nil</code> on arrival, so the list that crosses the wire has no gaps and its
+	length is exact.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local echo = Pigeon.new("Echo")
+
+echo:Emit("Values", 1, nil, 6)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local echo = Pigeon.new("Echo")
+
+echo:On("Values", function(player, a, b, c)
+	print(a, b, c)  --> 1 nil 6
+end)</code></pre>
+</div>
+
+<p>
+	The position does not matter. A leading <code>nil</code>, a middle one, a trailing
+	one and a list that is nothing but nils all arrive with the same count you sent. It
+	works the same in every direction: <code>Emit</code>, <code>Broadcast</code>,
+	<code>BroadcastTo</code>, <code>BroadcastExcept</code>, <code>SendToRoom</code>,
+	<code>Call</code>, <code>CallTo</code>, and the values a listener
+	<a href="requests.html">returns as a reply</a>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		This covers the arguments themselves, not what is inside them. A
+		<code>nil</code> in a table you pass is still a hole in that table, and Roblox
+		handles it the usual way. If you need a missing value inside a table, use an
+		explicit key and leave it out.
+	</p>
+</div>
+
+<p>
+	The marker is a private string that contains NUL bytes, so no ordinary string
+	collides with it. If a player sends that exact string, you read it back as
+	<code>nil</code>.
+</p>
+
 <h2>Reserved event names</h2>
 
 <p>
@@ -446,10 +500,11 @@ shop:Init()</code></pre>
 	<tbody>
 		<tr><td><code>__pigeon_ping</code></td><td><code>Ping</code></td></tr>
 		<tr><td><code>__pigeon_handshake</code></td><td><a href="handshakes.html">Handshakes</a></td></tr>
-		<tr><td><code>__pigeon_table_request</code></td><td rowspan="4"><a href="staged-tables.html">Staged Tables</a></td></tr>
+		<tr><td><code>__pigeon_table_request</code></td><td rowspan="5"><a href="staged-tables.html">Staged Tables</a></td></tr>
 		<tr><td><code>__pigeon_table_snapshot</code></td></tr>
 		<tr><td><code>__pigeon_table_patch</code></td></tr>
 		<tr><td><code>__pigeon_table_release</code></td></tr>
+		<tr><td><code>__pigeon_table_revoke</code></td></tr>
 	</tbody>
 </table>
 </div>
