@@ -46,8 +46,9 @@ export type PigeonCarrier = {
     Handshake:(self:PigeonCarrier, ...any) -> boolean,
     Init:(self:PigeonCarrier) -> PigeonCarrier,
 
-    On:(self:PigeonCarrier, event:string, Callback:(...any) -> ...any) -> (),
-    Off:(self:PigeonCarrier, event:string, Callback:(() -> ())?) -> (),
+    On:(self:PigeonCarrier, event:string, Callback:(...any) -> ()) -> (),
+    When:(self:PigeonCarrier, event:string, Callback:((...any) -> ...any)?) -> (),
+    Off:(self:PigeonCarrier, event:string, Callback:((...any) -> ...any)?) -> (),
 
     UseIncoming:(self:PigeonCarrier, Callback:(...any) -> ()) -> (),
     UseOutgoing:(self:PigeonCarrier, Callback:(...any) -> ()) -> (),

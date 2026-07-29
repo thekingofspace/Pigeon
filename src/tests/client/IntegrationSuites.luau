@@ -156,6 +156,98 @@ return function(TestKit: any, Fixtures: any): { any }
 		end)
 	end)
 
+	local split = TestKit.suite("Integration / On and When")
+	table.insert(suites, split)
+
+	split:test("Emit runs the On listeners and not the responder", function(t)
+		Fixtures.serverForget("Echo.SharedOn")
+		echo:Emit("Shared", "fire and forget")
+
+		t.eventually(function()
+			return Fixtures.serverCount("Echo.SharedOn") == 1
+		end, 5, "the listener should have run")
+	end, 25)
+
+	split:test("Call runs the responder and not the On listeners", function(t)
+		Fixtures.serverForget("Echo.SharedOn")
+
+		t.eq(echo:Call("Shared"), "from the responder")
+		t.never(function()
+			return Fixtures.serverCount("Echo.SharedOn") > 0
+		end, QUIET, "a request is not delivered to the fire and forget listeners")
+	end, 25)
+
+	split:test("a Call to an event that only has On listeners is held, not answered", function(t)
+		Fixtures.serverForget("Echo.OnlyOn")
+
+		local started = os.clock()
+		t.eq(impatient:Call("OnlyOn", "no responder here"), nil)
+		local elapsed = os.clock() - started
+
+		t.ok(
+			elapsed >= 1.4,
+			"the request waits for a responder rather than being turned away, so the caller times out"
+		)
+		t.never(function()
+			return Fixtures.serverCount("Echo.OnlyOn") > 0
+		end, QUIET, "and the listeners are still left out of a request")
+	end, 25)
+
+	split:test("a held request is answered by a responder that registers late", function(t)
+		local answer: any = nil
+		local done = false
+
+		task.spawn(function()
+			answer = echo:Call("LateResponder")
+			done = true
+		end)
+
+		t.wait(0.5)
+		ask("addLateResponder", {})
+
+		t.eventually(function()
+			return done
+		end, 9, "the held request should replay to the responder that just registered")
+		t.eq(answer, "answered late", "and the caller gets the answer it was waiting for")
+	end, 30)
+
+	split:test("an Emit for an event that only has a responder reaches nobody", function(t)
+		Fixtures.serverForget("Echo.SharedOn")
+		echo:Emit("Nothing")
+
+		t.never(function()
+			return Fixtures.serverCount("Echo.SharedOn") > 0
+		end, QUIET)
+	end, 25)
+
+	split:test("every On listener runs, and one that yields does not hold the rest", function(t)
+		local order = {}
+
+		local slow = Pigeon.new(Protocol.Echo, {}):Init()
+		slow:On("Recv", function()
+			table.insert(order, "slow-start")
+			task.wait(0.4)
+			table.insert(order, "slow-end")
+		end)
+		slow:On("Recv", function()
+			table.insert(order, "fast")
+		end)
+
+		serverBroadcast(Protocol.Echo, "Recv", "spawned")
+
+		t.eventually(function()
+			return #order >= 2
+		end, 5)
+		t.eq(order[1], "slow-start")
+		t.eq(order[2], "fast", "listeners are spawned, so a yielding one does not block the next")
+
+		t.eventually(function()
+			return order[3] == "slow-end"
+		end, 5)
+
+		slow:Destroy()
+	end, 30)
+
 	local requests = TestKit.suite("Integration / Call")
 	table.insert(suites, requests)
 

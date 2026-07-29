@@ -56,8 +56,8 @@
 <p>
 	A carrier is a named channel. It is the thing you send on and listen on. You make
 	one with <code>Pigeon.new("Shop")</code>. Everything you do day to day is a method
-	on a carrier: <code>On</code>, <code>Emit</code>, <code>Broadcast</code>,
-	<code>Call</code>, rooms, guards and middleware.
+	on a carrier: <code>On</code>, <code>When</code>, <code>Emit</code>,
+	<code>Broadcast</code>, <code>Call</code>, rooms, guards and middleware.
 </p>
 
 <p>Read more in <a href="carriers.html">Carriers</a>.</p>
@@ -154,8 +154,8 @@ local Pigeon = require(ReplicatedStorage.Pigeon)
 
 local shop = Pigeon.new("Shop")
 
--- The client can ask to buy something. Whatever you return goes back to them.
-shop:On("Buy", function(player, itemId)
+-- The client can ask to buy something. Whatever the responder returns goes back.
+shop:When("Buy", function(player, itemId)
 	if not canAfford(player, itemId) then
 		return false, "too expensive"
 	end
@@ -191,7 +191,10 @@ end</code></pre>
 	<p class="note__title">Note</p>
 	<p>
 		Server handlers get the player as the first argument. Client handlers do not,
-		because there is only one sender.
+		because there is only one sender. That holds for <code>On</code> listeners and
+		<code>When</code> responders alike. <code>On</code> hears fire and forget traffic
+		and cannot answer anything; a <code>Call</code> is answered by the event's one
+		<code>When</code> responder.
 	</p>
 </div>
 

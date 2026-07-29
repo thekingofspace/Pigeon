@@ -78,7 +78,7 @@ local Pigeon = require(ReplicatedStorage.Pigeon)</code></pre>
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>local shop = Pigeon.new("Shop")
 
-shop:On("Buy", function(player, itemId)
+shop:When("Buy", function(player, itemId)
 	return giveItem(player, itemId)
 end)</code></pre>
 </div>
@@ -240,7 +240,8 @@ Pigeon.new("Shop", { Transformer = "Combat" })  -- ERR_NO_TRANSFORMER</code></pr
 		Because options build a fresh carrier every time, you can end up with two
 		carriers on one name. Incoming messages are routed by name alone, so the two
 		share the channel: a packet goes to every carrier that bound its event with
-		<code>On</code>, and every listener they registered for it runs. A carrier that
+		<code>On</code> or <code>When</code>, and every listener they registered for it
+		runs. A carrier that
 		did not bind that event is skipped, its middleware included. Keep the receiving
 		side to a single carrier per name. See
 		<a href="../guide/known-issues.html">Known Issues</a>.

@@ -100,7 +100,7 @@ chat:SendToRoom("lobby", "Message", "hello")</code></pre>
 	</thead>
 	<tbody>
 		<tr><td><code>RoomID</code></td><td><code>string</code></td><td>The room name, unique inside this carrier.</td></tr>
-		<tr><td><code>Members</code></td><td><code>{Player}</code></td><td>The players to seed the room with. Pass an empty table for none.</td></tr>
+		<tr><td><code>Members</code></td><td><code>{Player}</code></td><td>The players to seed the room with. Pass an empty table, or nothing at all, for none.</td></tr>
 	</tbody>
 </table>
 </div>
@@ -345,14 +345,15 @@ local party = Pigeon.new("Party")
 -- Pigeon does not expose room membership, so track what you need to check.
 local leaderOf = {}   -- RoomID -> Player
 
-party:On("Create", function(player)
+-- These two answer a Call, so they are responders, not listeners.
+party:When("Create", function(player)
 	local id = "party_" .. player.UserId
 	party:CreateRoom(id, { player })
 	leaderOf[id] = player
 	return id
 end)
 
-party:On("Join", function(player, id)
+party:When("Join", function(player, id)
 	if not leaderOf[id] then
 		return false, "no such party"
 	end
@@ -360,6 +361,8 @@ party:On("Join", function(player, id)
 	party:SendToRoom(id, "Joined", player.Name)
 	return true
 end)
+
+-- These two answer nothing, so On is right.
 
 party:On("Say", function(player, id, text)
 	if not leaderOf[id] then

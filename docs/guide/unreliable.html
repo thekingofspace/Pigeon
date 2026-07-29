@@ -70,8 +70,8 @@ print(positions.Unreliable)   --> true</code></pre>
 		Passing any options table makes a fresh carrier that Pigeon does not cache.
 		Calling <code>Pigeon.new("Positions")</code> somewhere else gives you a
 		different, reliable carrier on the same channel name. The two share the channel,
-		so a packet goes to every carrier that bound its event with <code>On</code> and a
-		handler registered on both fires twice. Hold on to the one you built and pass it
+		so a packet goes to every carrier that bound its event with <code>On</code> or
+		<code>When</code>, and a handler registered on both fires twice. Hold on to the one you built and pass it
 		around. See <a href="carriers.html">Carriers</a>.
 	</p>
 </div>
@@ -122,7 +122,7 @@ print(positions.Unreliable)   --> true</code></pre>
 		<tr><td><code>SendToRoom</code></td><td>Unreliable</td></tr>
 		<tr><td><code>Call</code></td><td>Reliable, always</td></tr>
 		<tr><td><code>CallTo</code></td><td>Reliable, always</td></tr>
-		<tr><td>The reply a listener returns</td><td>Reliable, always</td></tr>
+		<tr><td>The reply a <code>When</code> responder returns</td><td>Reliable, always</td></tr>
 		<tr><td><code>Ping</code>, <code>Handshake</code>, <code>RequestTable</code></td><td>Reliable, because each is a <code>Call</code> underneath</td></tr>
 	</tbody>
 </table>

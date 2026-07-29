@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Requests and Replies | Pigeon</title>
-<meta name="description" content="Call, CallTo and Ping: how to ask the other machine a question and wait for the answer.">
+<meta name="description" content="When, Call, CallTo and Ping: how to ask the other machine a question and wait for the answer.">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
 </head>
@@ -18,14 +18,15 @@
 
 <p class="lead">
 	Sometimes you do not want to tell the other machine something. You want to ask it
-	something and wait for the answer. That is <code>Call</code> on the client,
-	<code>CallTo</code> on the server, and <code>Ping</code> for a quick latency check.
+	something and wait for the answer. You ask with <code>Call</code> on the client or
+	<code>CallTo</code> on the server, and the other side answers with
+	<code>When</code>. <code>Ping</code> is a small latency check built on the same path.
 </p>
 
 <h2>A first example</h2>
 
 <p>
-	The reply is whatever your listener returns. There is no reply function to call and
+	The reply is whatever your responder returns. There is no reply function to call and
 	no promise object to hold on to.
 </p>
 
@@ -36,7 +37,7 @@ local Pigeon = require(ReplicatedStorage.Pigeon)
 
 local shop = Pigeon.new("Shop")
 
-shop:On("Buy", function(player, itemId)
+shop:When("Buy", function(player, itemId)
 	if not canAfford(player, itemId) then
 		return false, "too expensive"
 	end
@@ -60,7 +61,210 @@ end</code></pre>
 
 <p>
 	The client thread stops on the <code>Call</code> line and starts again when the
-	server's listener returns. Everything after that line waits.
+	server's responder returns. Everything after that line waits.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		It has to be <code>When</code>. A handler registered with
+		<a href="sending.html"><code>On</code></a> is never run for a request and cannot
+		answer one, whatever it returns. That is the whole difference between the two, and
+		it is decided by the kind of packet, not by which handlers you happen to have.
+	</p>
+</div>
+
+<h2>When <span class="badge badge--shared">Shared</span></h2>
+
+<div class="api">
+	<pre class="api__sig"><code>carrier:When(event: string, Callback: ((...any) -> ...any)?) -> ()</code></pre>
+</div>
+
+<p>
+	Sets the responder for an event. It is the only thing that answers a
+	<code>Call</code> or a <code>CallTo</code>. Works on the server and on the client:
+	the server answers what clients <code>Call</code>, and a client answers what the
+	server asks with <code>CallTo</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to answer.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>((...any) -> ...any)?</code></td><td>The responder. On the server it receives the asking player first. Everything it returns goes back to the caller. Leave it out, or pass <code>nil</code>, to clear the responder for that event.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	<strong>Returns</strong> nothing. On a carrier that has been
+	<a href="cleanup.html">dropped</a>, <code>When</code> does nothing at all: the
+	responder is not stored and no error is raised.
+</p>
+
+<h3>One responder per event</h3>
+
+<p>
+	There is a single slot, not a list. Call <code>When</code> again on the same event
+	and the new callback replaces the old one. Nothing warns you, and the one you
+	replaced is gone.
+</p>
+
+<pre><code>shop:When("PriceOf", firstVersion)
+shop:When("PriceOf", secondVersion)
+
+-- Only secondVersion answers. firstVersion is no longer registered.</code></pre>
+
+<p>
+	That is on purpose. A request has one answer, so there is one place to write it. To
+	take a responder off, pass it to <a href="sending.html"><code>Off</code></a>, or call
+	<code>Off</code> with no callback to clear the listeners and the responder for that
+	event together. <code>When</code> with no callback does the same job on its own, and
+	leaves the listeners alone.
+</p>
+
+<pre><code>shop:When("PriceOf")   -- clears the responder, keeps every On("PriceOf") listener</code></pre>
+
+<h3>It runs on the packet's own thread</h3>
+
+<p>
+	A responder is not spawned. It runs on the thread that is already handling the
+	packet, which is why it can return a value at all: that thread is still there to take
+	the value and send it back. An <code>On</code> listener is spawned instead, and that
+	is exactly why its return value has nowhere to go.
+</p>
+
+<p>
+	Each arriving packet gets its own thread, so a responder never queues behind itself.
+	Two players asking the same question at the same moment are answered independently.
+</p>
+
+<h3>It may yield, and the caller waits</h3>
+
+<p>
+	Yielding inside a responder is allowed. <code>task.wait</code>, a DataStore read, a
+	<code>WaitForChild</code>: all of them work. The reply goes out when the responder
+	finally returns, and the caller sits on its <code>Call</code> line for the whole of
+	that time.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		The caller is not patient forever. If the responder runs past the caller's
+		timeout, the caller has already given up and moved on with <code>nil</code>, and
+		the answer that turns up later is thrown away. See <a href="#timeouts">Timeouts</a>.
+	</p>
+</div>
+
+<h3>An error means no answer at all</h3>
+
+<p>
+	A responder is pcalled, so an error inside it does not escape and does not reach the
+	caller. Pigeon warns on the machine that ran it and sends nothing:
+</p>
+
+<pre><code>ERR_CALLBACK_ERROR | Error in responder callback for event 'Buy': Workspace.Server.Shop:14: attempt to index nil</code></pre>
+
+<p>
+	The word in the message is <code>responder</code>, which tells it apart from the same
+	warning raised for middleware or for a handshake guard. The caller hears nothing, so
+	it waits out its full timeout and then gets <code>nil</code>, exactly as if there had
+	been no responder at all.
+</p>
+
+<p>
+	That is the opposite of how a fire and forget listener behaves. An <code>On</code>
+	listener is spawned and not wrapped, so its errors land in the output as ordinary
+	Roblox errors with a traceback. Only responders and
+	<a href="middleware.html">middleware</a> are caught and turned into warnings.
+</p>
+
+<h3>The server gets the player first</h3>
+
+<p>
+	On the server, Pigeon puts the asking player in front of your arguments. On the
+	client it does not, because there is only one machine asking.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Asked as</th><th>Server responder receives</th><th>Client responder receives</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>("Buy", "sword", 2)</code></td>
+			<td><code>(player, "sword", 2)</code></td>
+			<td><code>("sword", 2)</code></td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h2>One event name, both kinds</h2>
+
+<p>
+	<code>On</code> and <code>When</code> can sit on the same event name at once, and
+	that is the point of having two of them. The kind of packet picks the side. A fire
+	and forget send reaches every listener and never the responder. A request reaches the
+	responder and never the listeners.
+</p>
+
+<p>
+	So one name can carry both halves of a feature: listeners that watch it go past, and
+	one responder that decides the answer.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- Fire and forget. Runs for Emit, never for Call.
+shop:On("Buy", function(player, itemId)
+	logAttempt(player.UserId, itemId)
+end)
+
+-- The responder. Runs for Call, never for Emit.
+shop:When("Buy", function(player, itemId)
+	if not canAfford(player, itemId) then
+		return false, "too expensive"
+	end
+	giveItem(player, itemId)
+	return true, itemId
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+-- Logged by the listener. Nothing comes back, and the responder is not run.
+shop:Emit("Buy", "sword")
+
+-- Answered by the responder. The listener is not run, so nothing is logged.
+local ok, detail = shop:Call("Buy", "sword")</code></pre>
+</div>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What was sent</th><th>What runs</th><th>What comes back</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Emit</code>, <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code>, <code>SendToRoom</code></td><td>Every <code>On</code> for that event</td><td>Nothing</td></tr>
+		<tr><td><code>Call</code>, <code>CallTo</code></td><td>The one <code>When</code> for that event</td><td>What it returns</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	If you want the logging to happen for both, log it in the responder as well. The two
+	sides never chain into each other, so a listener is not run as a side effect of a
+	request.
 </p>
 
 <h2>Call <span class="badge badge--client">Client</span> <span class="badge badge--yields">Yields</span></h2>
@@ -70,10 +274,9 @@ end</code></pre>
 </div>
 
 <p>
-	The client asks the server something and waits. The server's listener gets the
-	sending player first, exactly like any other listener, and whatever it returns
-	comes back to the caller. Calling it on the server errors with
-	<code>ERR_NOT_CLIENT</code>.
+	The client asks the server something and waits. The server's responder gets the
+	sending player first, and whatever it returns comes back to the caller. Calling it on
+	the server errors with <code>ERR_NOT_CLIENT</code>.
 </p>
 
 <div class="table-wrap">
@@ -82,14 +285,14 @@ end</code></pre>
 		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
 	</thead>
 	<tbody>
-		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to raise on the server.</td></tr>
+		<tr><td><code>event</code></td><td><code>string</code></td><td>The event to ask on the server.</td></tr>
 		<tr><td><code>...</code></td><td><code>any</code></td><td>The request payload.</td></tr>
 	</tbody>
 </table>
 </div>
 
 <p>
-	<strong>Returns</strong> the server listener's return values, in order, or a single
+	<strong>Returns</strong> the server responder's return values, in order, or
 	<code>nil</code> if the call timed out or the carrier is dead.
 </p>
 
@@ -126,14 +329,14 @@ print(price)</code></pre>
 	</thead>
 	<tbody>
 		<tr><td><code>Target</code></td><td><code>Player</code></td><td>The one client to ask.</td></tr>
-		<tr><td><code>Event</code></td><td><code>string</code></td><td>The event to raise on that client.</td></tr>
+		<tr><td><code>Event</code></td><td><code>string</code></td><td>The event to ask on that client.</td></tr>
 		<tr><td><code>...</code></td><td><code>any</code></td><td>The request payload.</td></tr>
 	</tbody>
 </table>
 </div>
 
 <p>
-	<strong>Returns</strong> the client listener's return values, in order, or
+	<strong>Returns</strong> the client responder's return values, in order, or
 	<code>nil</code> if the call timed out, the player left, the carrier is dead, or a
 	handshake guard is installed and that player has not passed it.
 </p>
@@ -143,7 +346,7 @@ print(price)</code></pre>
 <pre><code>local ui = Pigeon.new("Ui")
 
 -- No player argument on this side. There is only one machine asking.
-ui:On("WhatResolution", function()
+ui:When("WhatResolution", function()
 	local size = workspace.CurrentCamera.ViewportSize
 	return size.X, size.Y
 end)
@@ -173,7 +376,22 @@ end</code></pre>
 	</p>
 </div>
 
-<h2>The reply is whatever your listener returns</h2>
+<h3>A client that leaves in the middle</h3>
+
+<p>
+	Nothing on the server errors when the far end walks out. Every send to a client
+	checks first that the player is still a real Instance, is not marked as having left,
+	and still has a parent, and the send itself is wrapped so that losing the race
+	between the check and the send is harmless too. That covers the reply to a
+	<code>Call</code>, every broadcast, and the release of a client's buffered backlog.
+</p>
+
+<p>
+	A <code>CallTo</code> waiting on someone who leaves does not sit out its timeout. It
+	is given up as soon as the player goes, and you get <code>nil</code>.
+</p>
+
+<h2>The reply is whatever the responder returns</h2>
 
 <p>
 	Return several values and you get several values back, in the same order.
@@ -181,7 +399,7 @@ end</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>shop:On("Stats", function(player)
+<pre><code>shop:When("Stats", function(player)
 	return 12, "gold", true
 end)</code></pre>
 </div>
@@ -201,7 +419,7 @@ end)</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>shop:On("Stats", function(player)
+<pre><code>shop:When("Stats", function(player)
 	return 1, nil, 6
 end)</code></pre>
 </div>
@@ -210,14 +428,14 @@ end)</code></pre>
 	<span class="code-block__label" data-side="client">Client</span>
 <pre><code>local a, b, c = shop:Call("Stats")
 
-print(a, b, c)  --> 1 nil 6</code></pre>
+print(a, b, c)  --&gt; 1 nil 6</code></pre>
 </div>
 
 <p>
 	Replies get the same treatment as
 	<a href="sending.html#sending-nil">arguments</a>: each <code>nil</code> is swapped
 	for a private marker on the way out and restored on arrival, so the count is exact.
-	Leading, middle and trailing nils all survive, and so does a listener that returns
+	Leading, middle and trailing nils all survive, and so does a responder that returns
 	nothing but nils.
 </p>
 
@@ -229,19 +447,6 @@ print(a, b, c)  --> 1 nil 6</code></pre>
 		a missing value inside a table, use an explicit key and leave it out.
 	</p>
 </div>
-
-<h3>More than one listener</h3>
-
-<p>
-	You can register several listeners for one event. They all run, one after another,
-	in the order you added them. Only the first reply is used. The others are thrown
-	away.
-</p>
-
-<p>
-	They also share a thread, so a slow listener delays every listener behind it on
-	that event.
-</p>
 
 <h2>What a round trip looks like</h2>
 
@@ -260,7 +465,7 @@ print(a, b, c)  --> 1 nil 6</code></pre>
 		<span class="flow__arrow">&rarr;</span>
 		<span class="flow__box">incoming middleware</span>
 		<span class="flow__arrow">&rarr;</span>
-		<span class="flow__box flow__box--brand">your On("Buy") handler</span>
+		<span class="flow__box flow__box--brand">your When("Buy") responder</span>
 	</div>
 	<div class="flow__row">
 		<span class="flow__arrow">&rarr;</span>
@@ -276,6 +481,11 @@ print(a, b, c)  --> 1 nil 6</code></pre>
 	The reply travels back on whichever remote the request arrived on, not on the one
 	the answering side would have picked. That is why a round trip still works when the
 	two halves were built on different transformers.
+</p>
+
+<p>
+	Note where the <code>On</code> listeners are in that picture: nowhere. They are not a
+	step that is skipped, they are simply not on this path.
 </p>
 
 <h3>Calls always use the reliable remote</h3>
@@ -302,8 +512,8 @@ print(a, b, c)  --> 1 nil 6</code></pre>
 		Passing options to <code>Pigeon.new</code> builds a fresh carrier that is not
 		cached, even if the table is empty. Ask for <code>Pigeon.new("Shop")</code>
 		somewhere else in your code and you get a different object with the default
-		timeout. Keep one carrier per channel per machine and pass it around. See
-		<a href="carriers.html">Carriers</a>.
+		timeout, and with none of your responders on it. Keep one carrier per channel per
+		machine and pass it around. See <a href="carriers.html">Carriers</a>.
 	</p>
 </div>
 
@@ -326,18 +536,18 @@ shop.Timeout = 3</code></pre>
 	the answer turns up after that it is thrown away.
 </p>
 
-<h2>Slow handlers hold the caller</h2>
+<h2>Slow responders hold the caller</h2>
 
 <p>
-	The thread that called <code>Call</code> is parked until your listener returns. If
-	the listener yields, the caller yields with it.
+	The thread that called <code>Call</code> is parked until your responder returns. If
+	the responder yields, the caller yields with it.
 </p>
 
 <div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
 		A <code>DataStore</code> read, a <code>WaitForChild</code> or a
-		<code>task.wait(15)</code> inside a listener does not just slow that listener
+		<code>task.wait(15)</code> inside a responder does not just slow that responder
 		down. It holds the machine on the other side of the wire, and if it runs past the
 		timeout the caller has already given up and moved on with <code>nil</code>.
 	</p>
@@ -345,20 +555,36 @@ shop.Timeout = 3</code></pre>
 
 <p>
 	If the work is genuinely slow, do not answer with the result. Answer straight away
-	with an acknowledgement and send the real thing later as a normal message.
+	with an acknowledgement and send the real thing later as a normal message, which the
+	other side picks up with <code>On</code>.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>local data = Pigeon.new("PlayerData")
 
-data:On("LoadProfile", function(player)
+data:When("LoadProfile", function(player)
 	task.spawn(function()
 		local profile = loadFromDataStore(player)  -- slow
 		data:BroadcastTo({ player }, "ProfileReady", profile)
 	end)
 	return true  -- answers immediately
 end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local data = Pigeon.new("PlayerData")
+
+data:On("ProfileReady", function(profile)
+	showProfile(profile)
+end)
+
+data:Init()
+
+if data:Call("LoadProfile") then
+	showSpinner()
+end</code></pre>
 </div>
 
 <h2>Every way you get nil back</h2>
@@ -387,19 +613,31 @@ end)</code></pre>
 			<td>As soon as they leave.</td>
 		</tr>
 		<tr>
+			<td>Incoming middleware renamed the event to something with no responder.</td>
+			<td>Straight away, with an empty reply. A rename is a decision, so there is nothing to wait for. See <a href="middleware.html">Middleware</a>.</td>
+		</tr>
+		<tr>
+			<td>The responder returned nothing, or returned <code>nil</code> on purpose.</td>
+			<td>Straight away, and that <code>nil</code> is a real answer.</td>
+		</tr>
+		<tr>
+			<td>The event has <code>On</code> listeners but no <code>When</code>.</td>
+			<td>After the timeout, unless a <code>When</code> shows up in time. See below.</td>
+		</tr>
+		<tr>
+			<td>Nothing at all is registered for that event.</td>
+			<td>After the timeout, unless a <code>When</code> shows up in time. See below.</td>
+		</tr>
+		<tr>
 			<td><code>Call</code> from a client that has not passed the handshake.</td>
 			<td>After the timeout. The server drops the packet at the door and nothing ever replies.</td>
 		</tr>
 		<tr>
-			<td>Nothing is listening for that event on the far side.</td>
-			<td>After the timeout, unless a listener shows up in time. See below.</td>
+			<td>The responder threw an error.</td>
+			<td>After the timeout. A failed responder sends no reply. The far machine warns about it.</td>
 		</tr>
 		<tr>
-			<td>The listener threw an error.</td>
-			<td>After the timeout. A failed listener sends no reply. The far machine warns about it.</td>
-		</tr>
-		<tr>
-			<td>The listener took longer than the timeout.</td>
+			<td>The responder took longer than the timeout.</td>
 			<td>After the timeout.</td>
 		</tr>
 	</tbody>
@@ -413,20 +651,54 @@ end)</code></pre>
 	mistakes, so Pigeon tells you loudly.
 </p>
 
-<h3>A request that beats the listener</h3>
+<h3>Listeners are not a substitute for a responder</h3>
 
 <p>
-	If a request arrives for an event nobody has registered yet, it is not thrown away.
-	It is held for 10 seconds and replayed to the first listener that registers for that
-	event. So a handler that gets set up a moment later still runs and still answers,
-	as long as your timeout has not run out first. With the default 10 second timeout
-	the two clocks are very close, so do not lean on it.
+	An event with plenty of <code>On</code> listeners and no <code>When</code> is, as far
+	as a request is concerned, an event with nothing on it. The listeners are not run and
+	they cannot reply. The request is held, waiting for a responder that may never
+	arrive, and the caller times out.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local shop = Pigeon.new("Shop")
+
+shop:On("PriceOf", function(player, itemId)
+	return priceOf(itemId)  -- goes nowhere
+end)</code></pre>
+</div>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="client">Client</span>
+<pre><code>local price = shop:Call("PriceOf", "sword")  -- nil, ten seconds later</code></pre>
+</div>
+
+<p>
+	Swap that <code>On</code> for a <code>When</code> and it works. This is the single
+	most likely thing to catch you out when moving code written against older versions of
+	Pigeon, where one method did both jobs.
+</p>
+
+<h3>A request that beats the responder</h3>
+
+<p>
+	If a request arrives for an event that has no responder yet, it is not thrown away.
+	It is held for 10 seconds and replayed to the first <code>When</code> that registers
+	for that event, so a responder set up a moment later still runs and still answers, as
+	long as your timeout has not run out first. With the default 10 second timeout the
+	two clocks are very close, so do not lean on it.
+</p>
+
+<p>
+	The hold is by kind. A held request only ever goes to a <code>When</code>, and
+	registering an <code>On</code> for that event does not collect it.
 </p>
 
 <h3>nil is not proof of failure</h3>
 
 <p>
-	A listener that returns nothing gives you <code>nil</code>, and so does one that
+	A responder that returns nothing gives you <code>nil</code>, and so does one that
 	returns <code>nil</code> on purpose. You cannot tell either apart from a timeout.
 	When the difference matters, return an explicit flag.
 </p>
@@ -434,7 +706,7 @@ end)</code></pre>
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>-- The first value says whether it worked.
-shop:On("Buy", function(player, id)
+shop:When("Buy", function(player, id)
 	if not giveItem(player, id) then
 		return false, "sold out"
 	end
@@ -475,8 +747,9 @@ print(string.format("%.1f ms", seconds * 1000))</code></pre>
 </div>
 
 <p>
-	There is nothing to register on the server. Pigeon answers the ping itself on a
-	reserved event, on every carrier, from the moment the carrier is built.
+	There is nothing to register on the server. Every server carrier puts its own
+	<code>When</code> on the reserved ping event the moment it is built, and that is what
+	answers.
 </p>
 
 <div class="note note--warn">
@@ -512,21 +785,25 @@ local stock = shop:Call("GetStock")  -- fine, no Init needed</code></pre>
 
 <p>
 	<code>Init</code> only opens the inbound direction: broadcasts from the server, and
-	server side <code>CallTo</code> requests. Read
-	<a href="startup.html">Startup and Buffering</a> for that half.
+	server side <code>CallTo</code> requests. If a client carrier has a
+	<code>When</code> on it, that responder cannot be reached until <code>Init</code> has
+	run. Read <a href="startup.html">Startup and Buffering</a> for that half.
 </p>
 
 <div class="note">
 	<p class="note__title">Note</p>
 	<p>
 		Event names starting with <code>__pigeon_</code> are reserved. Ping, handshakes
-		and staged tables run on them. Do not name your own events with that prefix.
+		and staged table requests run on them as responders, so putting your own
+		<code>When</code> on one replaces Pigeon's and breaks it. Do not name your own
+		events with that prefix.
 	</p>
 </div>
 
 <h2>What to read next</h2>
 
 <ul>
+	<li><a href="sending.html">Sending and Receiving</a> for <code>On</code>, the other half of the split.</li>
 	<li><a href="startup.html">Startup and Buffering</a> for what <code>Init</code> holds back and why.</li>
 	<li><a href="handshakes.html">Handshakes</a> for why a call can be silently refused.</li>
 	<li><a href="../api/carrier.html">Carrier API</a> for the full signatures.</li>

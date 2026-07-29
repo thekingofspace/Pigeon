@@ -114,6 +114,12 @@ window.PIGEON_SIDEBARS = [
 						text: "The Ref Pool",
 						keywords: "pool remoteevent bucket hash refcount instance count scaling",
 					},
+					{
+						link: "guide/optimizations.html",
+						text: "Optimizations",
+						keywords:
+							"optimizations optimisation performance bandwidth buffer metadata wire format size bytes batching nil bits promise id traffic cost",
+					},
 				],
 			},
 			{
@@ -156,6 +162,12 @@ window.PIGEON_SIDEBARS = [
 			{
 				text: "More",
 				items: [
+					{
+						link: "guide/changelog.html",
+						text: "Changelog",
+						keywords:
+							"changelog release history unreleased added changed fixed breaking when on responder listener revoke not_approved reachable nil detached",
+					},
 					{
 						link: "guide/known-issues.html",
 						text: "Known Issues",

@@ -694,7 +694,8 @@ mods:UseHandshake(function(player, token)
 end)
 
 -- Nothing reaches this handler unless the guard approved the sender.
-mods:On("Kick", function(player, targetName)
+-- It answers a Call, so it is a When responder rather than an On listener.
+mods:When("Kick", function(player, targetName)
 	local target = findPlayer(targetName)
 	if not target then
 		return false, "no such player"

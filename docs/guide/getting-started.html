@@ -205,13 +205,21 @@ end)</code></pre>
 
 <p>
 	<code>Emit</code> and <code>Broadcast</code> are fire and forget. When the client
-	needs an answer it uses <code>Call</code>, and the server's listener answers it by
-	returning a value. There is no separate object and no second event to wire up.
+	needs an answer it uses <code>Call</code>, and the server answers it with
+	<code>When</code>, whose return value is the reply. There is no separate object and
+	no second event to wire up.
+</p>
+
+<p>
+	<code>When</code> is the other half of <code>On</code>. A listener registered with
+	<code>On</code> is never run for a request and cannot answer one, whatever it
+	returns, so anything a client <code>Call</code>s needs a <code>When</code> on the
+	server. There is one responder per event name, and registering a second replaces it.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>points:On("GetTotal", function(player)
+<pre><code>points:When("GetTotal", function(player)
 	return totals[player] or 0
 end)</code></pre>
 </div>
@@ -223,14 +231,14 @@ print("starting total:", total)</code></pre>
 </div>
 
 <p>
-	<code>Call</code> yields the thread it is on until the server's handler returns.
-	Whatever that handler returns is what you get back, and you can return more than
+	<code>Call</code> yields the thread it is on until the server's responder returns.
+	Whatever that responder returns is what you get back, and you can return more than
 	one value.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>points:On("Spend", function(player, amount)
+<pre><code>points:When("Spend", function(player, amount)
 	local have = totals[player] or 0
 	if have &lt; amount then
 		return false, "not enough points"
@@ -335,11 +343,11 @@ local function award(player: Player, amount: number)
 	points:BroadcastTo({ player }, "Changed", totals[player])
 end
 
-points:On("GetTotal", function(player)
+points:When("GetTotal", function(player)
 	return totals[player] or 0
 end)
 
-points:On("Spend", function(player, amount)
+points:When("Spend", function(player, amount)
 	local have = totals[player] or 0
 	if have &lt; amount then
 		return false, "not enough points"
@@ -430,15 +438,16 @@ points:Init()</code></pre>
 <h3>Expecting the player argument on the client</h3>
 
 <p>
-	Server handlers get the sending player first. Client handlers do not. Copying a
-	handler from one side to the other and forgetting to change the arguments shifts
-	everything by one.
+	Server handlers get the sending player first. Client handlers do not. That holds for
+	<code>On</code> listeners and <code>When</code> responders alike. Copying a handler
+	from one side to the other and forgetting to change the arguments shifts everything
+	by one.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>points:On("Spend", function(player, amount)
-	--                    ^ the sender
+<pre><code>points:When("Spend", function(player, amount)
+	--                      ^ the sender
 end)</code></pre>
 </div>
 
@@ -459,16 +468,18 @@ points:On("Changed", function(total) end)</code></pre>
 </p>
 
 <pre><code>-- Do not do this.
-points:On("__pigeon_ping", function() end)</code></pre>
+points:When("__pigeon_ping", function() end)</code></pre>
 
 <div class="note note--danger">
 	<p class="note__title">Warning</p>
 	<p>
-		Nothing stops you registering one, which is what makes it dangerous. Your
-		handler fires on Pigeon's own protocol packets, and because a handler's return
-		value answers a request, whatever you return can become Pigeon's answer to its
-		own internal call. Stay off the <code>__pigeon_</code> prefix and there is
-		nothing to think about.
+		Nothing stops you registering one, which is what makes it dangerous. There is
+		only one responder per event, so a <code>When</code> of yours on
+		<code>__pigeon_ping</code>, <code>__pigeon_handshake</code> or
+		<code>__pigeon_table_request</code> replaces Pigeon's own and breaks pings,
+		handshakes or staged tables on that channel. An <code>On</code> on a reserved
+		name is no better: it fires on Pigeon's own protocol packets. Stay off the
+		<code>__pigeon_</code> prefix and there is nothing to think about.
 	</p>
 </div>
 
@@ -477,7 +488,7 @@ points:On("__pigeon_ping", function() end)</code></pre>
 <ul>
 	<li><a href="carriers.html">Carriers</a> for everything a carrier can do.</li>
 	<li><a href="sending.html">Sending and Receiving</a> for the send methods in full.</li>
-	<li><a href="requests.html">Requests and Replies</a> for <code>Call</code>, <code>CallTo</code> and timeouts.</li>
+	<li><a href="requests.html">Requests and Replies</a> for <code>When</code>, <code>Call</code>, <code>CallTo</code> and timeouts.</li>
 	<li><a href="startup.html">Startup and Buffering</a> for what <code>Init</code> is really doing.</li>
 </ul>
 

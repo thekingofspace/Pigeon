@@ -77,10 +77,15 @@ return function(TestKit: any, Fixtures: any, player: Player): { any }
 		t.eq(live:CallTo(player, "Arity", 1, 2, 3), 3)
 	end)
 
-	calls:test("the nil sentinel is not confused with a real string", function(t)
+	calls:test("no string can be mistaken for a nil", function(t)
 		local first, second = live:CallTo(player, "Echo", "\0__pigeon_nil\0", "after")
-		t.eq(second, "after", "the argument after it must still arrive")
-		t.eq(first, nil, "a client sending the sentinel itself reads back as nil, which is the known limit")
+
+		t.eq(
+			first,
+			"\0__pigeon_nil\0",
+			"nils travel as bits in the metadata, so no string value is reserved any more"
+		)
+		t.eq(second, "after")
 	end)
 
 	calls:test("survives a client listener that yields", function(t)

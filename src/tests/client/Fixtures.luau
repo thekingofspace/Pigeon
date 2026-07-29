@@ -66,28 +66,28 @@ function Fixtures.build()
 	local live = Pigeon.new(Protocol.Live):Init()
 	Fixtures.carriers[Protocol.Live] = live
 
-	live:On("Echo", function(...: any)
+	live:When("Echo", function(...: any)
 		return ...
 	end)
 
-	live:On("Triple", function()
+	live:When("Triple", function()
 		return 1, "two", true
 	end)
 
-	live:On("Arity", function(...: any)
+	live:When("Arity", function(...: any)
 		return select("#", ...)
 	end)
 
-	live:On("Slow", function()
+	live:When("Slow", function()
 		task.wait(1.2)
 		return "eventually"
 	end)
 
-	live:On("Boom", function()
+	live:When("Boom", function()
 		error("a client listener that throws must not answer the call")
 	end)
 
-	live:On("Silent", function() end)
+	live:When("Silent", function() end)
 
 	live:UseIncoming(function(_direction: string, event: string)
 		if event == "Denied" then
@@ -104,26 +104,26 @@ function Fixtures.build()
 		inbox:record(key, index)
 	end)
 
-	live:On("Observed", function(key: string)
+	live:When("Observed", function(key: string)
 		return { count = inbox:count(key), entries = inbox:all(key) }
 	end)
 
-	live:On("Reset", function(key: string?)
+	live:When("Reset", function(key: string?)
 		inbox:reset(key)
 		return true
 	end)
 
-	live:On("PatchCount", function()
+	live:When("PatchCount", function()
 		return Fixtures.patchPackets
 	end)
 
-	live:On("ResetPatches", function()
+	live:When("ResetPatches", function()
 		Fixtures.patchPackets = 0
 		Fixtures.snapshotPackets = 0
 		return true
 	end)
 
-	live:On("TableValue", function(id: string, path: { any })
+	live:When("TableValue", function(id: string, path: { any })
 		local carrier = Fixtures.carriers[Protocol.Tables]
 		local staged = (carrier :: any)._tables[id]
 		if not staged then
@@ -140,7 +140,7 @@ function Fixtures.build()
 		return node[path[#path]]
 	end)
 
-	live:On("HasTable", function(id: string)
+	live:When("HasTable", function(id: string)
 		return (Fixtures.carriers[Protocol.Tables] :: any)._tables[id] ~= nil
 	end)
 

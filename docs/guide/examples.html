@@ -35,7 +35,7 @@
 	</thead>
 	<tbody>
 		<tr><td>1</td><td><a href="#1-tell-the-server-something-happened">Tell the server something happened</a></td><td><code>On</code> and <code>Emit</code></td></tr>
-		<tr><td>2</td><td><a href="#2-ask-the-server-a-question">Ask the server a question</a></td><td><code>Call</code> and returning a value</td></tr>
+		<tr><td>2</td><td><a href="#2-ask-the-server-a-question">Ask the server a question</a></td><td><code>Call</code> and <code>When</code></td></tr>
 		<tr><td>3</td><td><a href="#3-a-live-scoreboard">A live scoreboard</a></td><td><code>Broadcast</code> and <code>Init</code></td></tr>
 		<tr><td>4</td><td><a href="#4-party-chat">Party chat</a></td><td>Rooms</td></tr>
 		<tr><td>5</td><td><a href="#5-a-staff-only-channel">A staff only channel</a></td><td>Handshakes</td></tr>
@@ -91,15 +91,15 @@ end)</code></pre>
 <h2>2. Ask the server a question</h2>
 
 <p>
-	<code>Call</code> waits for an answer. Whatever the server listener returns is
-	what the client gets back.
+	<code>Call</code> waits for an answer, and <code>When</code> is what answers it.
+	Whatever the server's responder returns is what the client gets back.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>local shop = Pigeon.new("Shop")
 
-shop:On("Buy", function(player, itemId)
+shop:When("Buy", function(player, itemId)
 	local price = PRICES[itemId]
 	if not price then
 		return false, "no such item"
@@ -129,9 +129,11 @@ end</code></pre>
 </div>
 
 <p>
-	The server never has to send a reply itself. Returning from the listener is the
-	reply. If the listener errors, or nothing is listening, the call gives up after
-	the timeout and returns <code>nil</code>.
+	The server never has to send a reply itself. Returning from the responder is the
+	reply. It has to be <code>When</code>: a listener added with <code>On</code> is
+	never run for a <code>Call</code> and cannot answer one, whatever it returns. If the
+	responder errors, or the event has no <code>When</code> on it, the call gives up
+	after the timeout and returns <code>nil</code>.
 </p>
 
 <h2>3. A live scoreboard</h2>
@@ -189,17 +191,19 @@ scores:Init()</code></pre>
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>local party = Pigeon.new("Party")
 
-party:On("Create", function(player, partyId)
+-- The client asks with Call, so these two are responders.
+party:When("Create", function(player, partyId)
 	party:CreateRoom(partyId, { player })
 	return true
 end)
 
-party:On("Join", function(player, partyId)
+party:When("Join", function(player, partyId)
 	party:JoinRoom(partyId, player)
 	party:SendToRoom(partyId, "Joined", player.Name)
 	return true
 end)
 
+-- Nothing waits on these, so they stay listeners.
 party:On("Say", function(player, partyId, message)
 	party:SendToRoom(partyId, "Message", player.Name, message)
 end)
@@ -365,7 +369,7 @@ damage:On("Hit", function(player, targetId, amount)
 	applyDamage(player, targetId, amount)
 end)
 
-status:On("Request", function(player)
+status:When("Request", function(player)
 	return getStatus(player)
 end)
 

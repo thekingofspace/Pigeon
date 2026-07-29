@@ -152,8 +152,9 @@ view.round = 2</code></pre>
 	Init: (self: PigeonCarrier) -&gt; PigeonCarrier,
 
 	--Shared
-	On: (self: PigeonCarrier, event: string, Callback: (...any) -&gt; ...any) -&gt; (),
-	Off: (self: PigeonCarrier, event: string, Callback: (() -&gt; ())?) -&gt; (),
+	On: (self: PigeonCarrier, event: string, Callback: (...any) -&gt; ()) -&gt; (),
+	When: (self: PigeonCarrier, event: string, Callback: ((...any) -&gt; ...any)?) -&gt; (),
+	Off: (self: PigeonCarrier, event: string, Callback: ((...any) -&gt; ...any)?) -&gt; (),
 
 	UseIncoming: (self: PigeonCarrier, Callback: (...any) -&gt; ()) -&gt; (),
 	UseOutgoing: (self: PigeonCarrier, Callback: (...any) -&gt; ()) -&gt; (),
@@ -188,15 +189,25 @@ announce(shop, getStock())</code></pre>
 </p>
 
 <p>
-	<code>On</code> takes the same callback type on both sides, but the arguments differ.
-	A server listener is handed the sending player first, a client listener is not.
+	<code>On</code> and <code>When</code> are the two ways to handle an event, and the type
+	says which is which. An <code>On</code> callback returns <code>()</code>, because a
+	listener's return value has nowhere to go. A <code>When</code> callback returns
+	<code>...any</code>, because a responder's return values are the reply to a
+	<code>Call</code> or a <code>CallTo</code>. Both callbacks are optional in
+	<code>When</code> and <code>Off</code>: passing <code>nil</code> to <code>When</code>
+	clears the responder for that event.
+</p>
+
+<p>
+	Either way the arguments differ by machine. A server handler is handed the sending
+	player first, a client handler is not.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
 <pre><code>local shop = Pigeon.new("Shop")
 
-shop:On("Buy", function(player: Player, itemId: string)
+shop:When("Buy", function(player: Player, itemId: string)
 	return giveItem(player, itemId)
 end)</code></pre>
 </div>
@@ -278,10 +289,12 @@ shop:UseOutgoing(rename)</code></pre>
 	<p>
 		<code>player</code> is not filled in as often as you might expect on the way out.
 		Incoming on the server it is the player who sent the packet. Outgoing on the
-		server two calls fill it in: <code>CallTo</code>, with the player being asked,
-		and <code>Revoke</code>, with the player being revoked on the reserved
-		<code>__pigeon_table_revoke</code> message it sends them. The broadcast methods
-		leave it <code>nil</code>. On the client it is always <code>nil</code>.
+		server two paths fill it in: <code>CallTo</code>, with the player being asked,
+		and losing access, with the player being cleared out on the reserved
+		<code>__pigeon_table_revoke</code> message it sends them. That second one covers
+		<code>Revoke</code> and a handshake the guard turned down, since both evict the
+		player the same way. The broadcast methods leave it <code>nil</code>. On the
+		client it is always <code>nil</code>.
 	</p>
 </div>
 

@@ -62,8 +62,9 @@ print(#mods:Approved())   --&gt; everyone in the server</code></pre>
 
 <p>
 	Incoming middleware sees every packet on its channel, except one: an event that a
-	<em>different</em> carrier on the same name has bound with <code>On</code>. The
-	listener claims that packet, so the other carrier's chain never gets a look at it.
+	<em>different</em> carrier on the same name has bound, with either <code>On</code> or
+	<code>When</code>. That carrier claims the packet, so the other one's chain never gets
+	a look at it.
 </p>
 
 <pre><code>-- Both are on the "Chat" channel.

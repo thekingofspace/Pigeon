@@ -1,9 +1,9 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
 
 local Types = require("./Types")
+local Wire = require("./Wire")
 local module = {}
 
 local IS_SERVER = RunService:IsServer()
@@ -28,10 +28,19 @@ local BUFFER_MAX = 64
 local OUTBOX_TTL = 30
 local OUTBOX_MAX = 64
 
-local KIND_PUSH = "push"
-local KIND_CALL = "call"
-local KIND_RESPOND = "respond"
-local KIND_AUTH = "auth"
+local nextPromise = 0
+
+local function newPromise(): number
+	nextPromise = (nextPromise % 4294967294) + 1
+	return nextPromise
+end
+
+local function payloadOf(data: any): ({ any }?, number)
+	if type(data) ~= "table" then
+		return nil, 0
+	end
+	return data.args, data.n or 0
+end
 
 module.KnownTransformers = 0
 
@@ -50,7 +59,7 @@ type Pending = {
 	onResolve: (...any) -> (),
 }
 
-local pending: { [string]: Pending } = {}
+local pending: { [number]: Pending } = {}
 
 local ready: { [string]: { [Player]: boolean } } = {}
 local buffered: { [string]: { [Player]: { Orphan } } } = {}
@@ -59,10 +68,11 @@ local watchers: { [string]: { (event: string, ...any) -> () } } = {}
 
 type Outbound = {
 	at: number,
-	uuid: string,
+	uuid: string?,
+	bucket: number?,
 	auth: string?,
 	unreliable: boolean,
-	promiseId: string?,
+	promiseId: number?,
 	args: { n: number, [number]: any },
 }
 
@@ -76,6 +86,17 @@ local function channelOf(event: string): string
 end
 
 local departed: { [Player]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+
+local function reachable(player: Player?): boolean
+	if typeof(player) ~= "Instance" then
+		return false
+	end
+	local target = player :: Player
+	if departed[target] then
+		return false
+	end
+	return target.Parent ~= nil
+end
 
 local function hashString(s: string): number
 	local hash = 2166136261
@@ -118,7 +139,7 @@ local function dispatch(event: string, ...: any)
 	holdOrphan(event, ...)
 end
 
-local function resolvePending(id: string, ...: any)
+local function resolvePending(id: number, ...: any)
 	local waiter = pending[id]
 	if waiter and not waiter.resolved then
 		waiter.resolved = true
@@ -140,21 +161,21 @@ local function getRefFolder(): Folder
 	return ReplicatedStorage:WaitForChild(REF_FOLDER_NAME) :: Folder
 end
 
-local function onClientPacket(kind: string, transformerId: string, ...: any)
-	if kind == KIND_RESPOND then
-		local promiseId, data = ...
-		resolvePending(promiseId, true, data)
-	elseif kind == KIND_PUSH then
-		local event, data = ...
-		dispatch(event, transformerId, data)
-	elseif kind == KIND_CALL then
-		local event, promiseId, data = ...
-		dispatch(event, transformerId, data, promiseId)
+local function onClientPacket(bucket: number, meta: buffer, values: { any }?)
+	local kind, event, promiseId, args, count = Wire.unpack(meta, values)
+	local payload = { args = args, n = count }
+
+	if kind == Wire.RESPOND then
+		resolvePending(promiseId :: number, true, payload)
+	elseif kind == Wire.PUSH then
+		dispatch(event, bucket, payload)
+	elseif kind == Wire.CALL then
+		dispatch(event, bucket, payload, promiseId)
 	end
 end
 
 local function flushBuffer(channel: string, player: Player)
-	if departed[player] then
+	if not reachable(player) then
 		return
 	end
 
@@ -178,26 +199,29 @@ local function flushBuffer(channel: string, player: Player)
 	for _, packet in queue do
 		local ref = refs[packet.bucket]
 		if ref then
-			ref:FireClient(player, table.unpack(packet.args, 1, packet.args.n))
+			pcall(ref.FireClient, ref, player, table.unpack(packet.args, 1, packet.args.n))
 		end
 	end
 end
 
-local function onServerPacket(_bucket: number, player: Player, kind: string, transformerId: string, ...: any)
-	if kind == KIND_AUTH then
-		local channel = ...
-		if type(channel) == "string" then
-			flushBuffer(channel, player)
+local function onServerPacket(bucket: number, player: Player, meta: buffer, values: { any }?)
+	local kind, event, promiseId, args, count = Wire.unpack(meta, values)
+
+	if kind == Wire.AUTH then
+		if event ~= "" then
+			flushBuffer(event, player)
 		end
-	elseif kind == KIND_RESPOND then
-		local promiseId, data = ...
-		resolvePending(promiseId, true, data)
-	elseif kind == KIND_PUSH then
-		local event, data = ...
-		dispatch(event, player, transformerId, data)
-	elseif kind == KIND_CALL then
-		local event, promiseId, data = ...
-		dispatch(event, player, transformerId, data, promiseId)
+		return
+	end
+
+	local payload = { args = args, n = count }
+
+	if kind == Wire.RESPOND then
+		resolvePending(promiseId :: number, true, payload)
+	elseif kind == Wire.PUSH then
+		dispatch(event, player, bucket, payload)
+	elseif kind == Wire.CALL then
+		dispatch(event, player, bucket, payload, promiseId)
 	end
 end
 
@@ -207,7 +231,9 @@ local function bindClientUnreliable(bucket: number, twin: UnreliableRemoteEvent)
 		return cached
 	end
 	unreliableRefs[bucket] = twin
-	twin.OnClientEvent:Connect(onClientPacket)
+	twin.OnClientEvent:Connect(function(...)
+		onClientPacket(bucket, ...)
+	end)
 	return twin
 end
 
@@ -216,7 +242,9 @@ local function bindClientRef(bucket: number, remote: RemoteEvent)
 		return
 	end
 	refs[bucket] = remote
-	remote.OnClientEvent:Connect(onClientPacket)
+	remote.OnClientEvent:Connect(function(...)
+		onClientPacket(bucket, ...)
+	end)
 
 	local folder = remote.Parent
 	local twin = folder and folder:FindFirstChild(REF_PREFIX_UNRELIABLE .. bucket)
@@ -342,7 +370,7 @@ local function resolveUnreliable(bucket: number): UnreliableRemoteEvent?
 end
 
 local function deliver(packet: Outbound): boolean
-	local bucket = bucketOf(packet.uuid)
+	local bucket = packet.bucket or bucketOf(packet.uuid :: string)
 
 	if packet.unreliable then
 		local uref = resolveUnreliable(bucket)
@@ -434,7 +462,7 @@ flushOutbox = function()
 end
 
 local function fireOrBuffer(channel: string, bucket: number, player: Player, unreliable: boolean, ...: any)
-	if departed[player] then
+	if not reachable(player) then
 		return
 	end
 
@@ -445,7 +473,7 @@ local function fireOrBuffer(channel: string, bucket: number, player: Player, unr
 		if isReady then
 			local uref = resolveUnreliable(bucket)
 			if uref then
-				uref:FireClient(player, ...)
+				pcall(uref.FireClient, uref, player, ...)
 			end
 		end
 		return
@@ -454,7 +482,7 @@ local function fireOrBuffer(channel: string, bucket: number, player: Player, unr
 	if isReady then
 		local ref = refs[bucket]
 		if ref then
-			ref:FireClient(player, ...)
+			pcall(ref.FireClient, ref, player, ...)
 			return
 		end
 	end
@@ -598,7 +626,7 @@ function module.Ready(Transformer: Types.Transformer, channel: string)
 		uuid = Transformer.uuid,
 		auth = channel,
 		unreliable = false,
-		args = table.pack(KIND_AUTH, Transformer.uuid, channel),
+		args = table.pack(Wire.pack(Wire.AUTH, channel, nil, nil, 0)),
 	})
 end
 
@@ -607,7 +635,7 @@ function module.Push(Transformer: Types.Transformer, event: string, data: any, u
 		at = os.clock(),
 		uuid = Transformer.uuid,
 		unreliable = unreliable == true,
-		args = table.pack(KIND_PUSH, Transformer.uuid, event, data),
+		args = table.pack(Wire.pack(Wire.PUSH, event, nil, payloadOf(data))),
 	})
 end
 
@@ -622,12 +650,12 @@ function module.Broadcast(
 	local channel = channelOf(event)
 	createRef(bucket)
 	for _, player in players do
-		fireOrBuffer(channel, bucket, player, unreliable == true, KIND_PUSH, Transformer.uuid, event, data)
+		fireOrBuffer(channel, bucket, player, unreliable == true, Wire.pack(Wire.PUSH, event, nil, payloadOf(data)))
 	end
 end
 
 function module.Call(Transformer: Types.Transformer, event: string, data: any, timeout: number?): (boolean, any)
-	local promiseId = HttpService:GenerateGUID(false)
+	local promiseId = newPromise()
 	local thread = coroutine.running()
 
 	local settled, settledOk, settledResult = false, false, nil :: any
@@ -649,7 +677,7 @@ function module.Call(Transformer: Types.Transformer, event: string, data: any, t
 		uuid = Transformer.uuid,
 		unreliable = false,
 		promiseId = promiseId,
-		args = table.pack(KIND_CALL, Transformer.uuid, event, promiseId, data),
+		args = table.pack(Wire.pack(Wire.CALL, event, promiseId, payloadOf(data))),
 	})
 
 	if settled then
@@ -658,22 +686,23 @@ function module.Call(Transformer: Types.Transformer, event: string, data: any, t
 	return coroutine.yield()
 end
 
-function module.Respond(transformerId: string, promiseId: string, data: any, player: Player?)
+function module.Respond(bucket: number, promiseId: number, data: any, player: Player?)
+	local meta, values = Wire.pack(Wire.RESPOND, "", promiseId, payloadOf(data))
+
 	if IS_SERVER then
 		local target = player :: Player
-		if departed[target] then
+		if not reachable(target) then
 			return
 		end
 
-		local bucket = bucketOf(transformerId)
 		local ref = createRef(bucket)
-		ref:FireClient(target, KIND_RESPOND, transformerId, promiseId, data)
+		pcall(ref.FireClient, ref, target, meta, values)
 	else
 		sendOrHold({
 			at = os.clock(),
-			uuid = transformerId,
+			bucket = bucket,
 			unreliable = false,
-			args = table.pack(KIND_RESPOND, transformerId, promiseId, data),
+			args = table.pack(meta, values),
 		})
 	end
 end
@@ -723,7 +752,7 @@ function module.BroadcastCall(
 	end
 
 	for _, player in players do
-		local promiseId = HttpService:GenerateGUID(false)
+		local promiseId = newPromise()
 		ids[player] = promiseId
 		pending[promiseId] = {
 			expires = deadline,
@@ -736,7 +765,7 @@ function module.BroadcastCall(
 				end
 			end,
 		}
-		fireOrBuffer(channel, bucket, player, false, KIND_CALL, Transformer.uuid, event, promiseId, data)
+		fireOrBuffer(channel, bucket, player, false, Wire.pack(Wire.CALL, event, promiseId, payloadOf(data)))
 	end
 
 	leaveConn = Players.PlayerRemoving:Connect(function(leaving: Player)

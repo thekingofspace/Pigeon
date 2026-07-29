@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en" data-base="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimizations | Pigeon</title>
+<meta name="description" content="What Pigeon does to keep traffic small: metadata in a buffer, one pool of remotes, batched table writes, and what it deliberately leaves alone.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div class="layout">
+	<div class="page">
+		<main class="content">
+
+<h1>Optimizations</h1>
+
+<p class="lead">
+	What Pigeon does to keep traffic small, and what it deliberately does not touch.
+	None of this needs turning on. It is how the library already works.
+</p>
+
+<p>
+	One rule runs through all of it: <strong>your data is never rewritten</strong>.
+	<code>shop:Emit("Sold", id)</code> puts <code>id</code> on the wire exactly as you
+	passed it. Everything below is about the bookkeeping Pigeon wraps around it.
+</p>
+
+<h2>Metadata travels as a buffer</h2>
+
+<p>
+	Every message carries some bookkeeping: what kind of message it is, which event it
+	is for, and which request it answers. Sending that as separate strings is wasteful,
+	so Pigeon packs it into one <code>buffer</code> and sends that instead.
+</p>
+
+<p>A packet on the wire is two things:</p>
+
+<div class="flow">
+	<p class="flow__label">One message</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">meta buffer</span>
+		<span class="flow__note">kind, event, request id, which arguments were nil</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">your values</span>
+		<span class="flow__note">a plain array, exactly as you passed them</span>
+	</div>
+</div>
+
+<h3>What is in the buffer</h3>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Field</th><th>Size</th><th>What it is</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>flags</td><td>1 byte</td><td>The kind of message in the low two bits, then a bit for whether a request id follows and a bit for whether there are arguments.</td></tr>
+		<tr><td>event length</td><td>2 bytes</td><td>How long the event name is.</td></tr>
+		<tr><td>request id</td><td>4 bytes</td><td>Only on a request or a reply.</td></tr>
+		<tr><td>argument count</td><td>1 byte</td><td>Only when there are arguments. At most 255.</td></tr>
+		<tr><td>nil bits</td><td>1 bit each</td><td>One bit per argument, saying whether it was <code>nil</code>.</td></tr>
+		<tr><td>event name</td><td>the rest</td><td>The channel name, a zero byte, then your event name.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>What it saves</h3>
+
+<p>
+	Measured as bytes of wire data for the bookkeeping alone. Your arguments are the
+	same either way.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Message</th><th>Before</th><th>Now</th></tr>
+	</thead>
+	<tbody>
+		<tr><td><code>Emit("Sold", id)</code> on a channel called Shop</td><td>51 bytes</td><td>14 bytes</td></tr>
+		<tr><td><code>Call("Request")</code> on a channel called PlayerData</td><td>96 bytes</td><td>27 bytes</td></tr>
+		<tr><td>The reply to that call</td><td>81 bytes</td><td>9 bytes</td></tr>
+		<tr><td><code>Init()</code> on a channel called Shop</td><td>46 bytes</td><td>7 bytes</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>Three things account for almost all of it.</p>
+
+<h4>The transformer id is not sent at all</h4>
+
+<p>
+	It used to ride on every single packet, 38 characters of it, and the receiving side
+	used it for exactly one thing: working out which remote to send the reply back on.
+	But the receiver already knows that, because it knows which remote the message just
+	arrived on. So the id is gone and the reply goes back the way the request came.
+</p>
+
+<p>
+	That is also more correct than it was. Recomputing the remote from an id could pick a
+	different one if the pool had resized in between. Answering on the remote the request
+	came in on cannot drift. See <a href="ref-pool.html">The Ref Pool</a>.
+</p>
+
+<h4>Request ids are numbers</h4>
+
+<p>
+	A request id used to be a 36 character string from <code>GenerateGUID</code>. It is
+	now a 4 byte counter. An id only has to be unique on the machine that made it,
+	because a reply carries back the id the caller generated, so a counter is enough.
+</p>
+
+<h4>Nil is one bit</h4>
+
+<p>
+	Roblox drops a <code>nil</code> out of the middle of an argument list, so a library
+	that wants to carry one has to say so some other way. Pigeon used to substitute a
+	14 byte marker string. Now it writes one bit per argument into the meta buffer and
+	the far side puts the <code>nil</code> back.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		That also removed a sharp edge. With a marker string, a player who sent that exact
+		string would have had it read back as <code>nil</code>. Bits cannot collide with
+		anything, so no string value is reserved any more.
+	</p>
+</div>
+
+<h2>One pool of remotes</h2>
+
+<p>
+	Pigeon does not make a RemoteEvent per channel. It keeps a small pool and hashes each
+	channel onto one, so 200 channels fit in 13 remotes rather than 200 Instances. Full
+	detail, including why hashing rather than assigning, is in
+	<a href="ref-pool.html">The Ref Pool</a>.
+</p>
+
+<h2>Table writes are batched</h2>
+
+<p>
+	Writing five fields of a <a href="staged-tables.html">staged table</a> in one frame
+	sends one message, not five. The writes queue and flush together, so filling a table
+	field by field costs one send.
+</p>
+
+<div class="code-block">
+	<span class="code-block__label" data-side="server">Server</span>
+<pre><code>local view = stats:GetTable()
+
+view.coins = 120
+view.level = 4
+view.combat.health = 100
+
+-- One patch goes out, carrying all three.</code></pre>
+</div>
+
+<h2>Nothing is sent to someone who cannot use it</h2>
+
+<p>
+	A guarded channel filters the recipient list before the packet is built, so a client
+	that has not passed the guard costs nothing to skip. If a broadcast has nobody left
+	after that filter, no packet is built at all. See
+	<a href="handshakes.html">Handshakes</a>.
+</p>
+
+<p>
+	Messages for a client that has not called <code>Init</code> yet are held rather than
+	sent and lost, and unreliable messages for that client are dropped instead of held,
+	because replaying something that was allowed to be dropped is pointless. See
+	<a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<h2>The lossy lane</h2>
+
+<p>
+	A carrier made with <code>{ Unreliable = true }</code> sends on an
+	<code>UnreliableRemoteEvent</code>, which is cheaper and may drop. Use it for things
+	you send every frame and would not miss. Requests and replies always take the
+	reliable lane whatever the carrier says. See
+	<a href="unreliable.html">Unreliable Sending</a>.
+</p>
+
+<h2>What Pigeon does not do</h2>
+
+<p>Worth being clear about, so you know where the remaining cost is.</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>Not done</th><th>Why</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>Compress your arguments</td>
+			<td>They go across exactly as you passed them. If you send a large table every frame, that is the cost, and only you can make it smaller.</td>
+		</tr>
+		<tr>
+			<td>Diff arbitrary tables</td>
+			<td>Only a <a href="staged-tables.html">staged table</a> sends changes rather than the whole thing. A plain table passed to <code>Emit</code> is sent whole.</td>
+		</tr>
+		<tr>
+			<td>Merge separate sends</td>
+			<td>Two <code>Emit</code> calls in one frame are two messages. Only staged table writes coalesce.</td>
+		</tr>
+		<tr>
+			<td>Shorten your event names</td>
+			<td>The channel name and event name are on the wire so the far side can route without a shared registry. Long names cost bytes on every packet.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		The one place your own choices show up in the numbers above is naming. A channel
+		called <code>"PlayerInventoryManagement"</code> puts 25 bytes on every packet it
+		carries. Short names are worth having on a channel you send on constantly.
+	</p>
+</div>
+
+<h2>What to read next</h2>
+
+<ul>
+	<li><a href="ref-pool.html">The Ref Pool</a> for how channels share remotes.</li>
+	<li><a href="staged-tables.html">Staged Tables</a> for replicating state instead of resending it.</li>
+	<li><a href="unreliable.html">Unreliable Sending</a> for the lossy lane.</li>
+	<li><a href="../api/network.html">Network</a> for the transport underneath.</li>
+</ul>
+
+		</main>
+	</div>
+</div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/site.js"></script>
+</body>
+</html>

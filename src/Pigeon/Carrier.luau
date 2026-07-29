@@ -29,8 +29,8 @@ type Packet = {
 	args: { any },
 	count: number,
 	player: Player?,
-	transformerId: string,
-	promiseId: string?,
+	bucket: number,
+	promiseId: number?,
 }
 
 local EV_PING = "__pigeon_ping"
@@ -90,56 +90,97 @@ local function alive(self: any): boolean
 	return not self._dropped and not self._transformer.destroyed
 end
 
-local NIL = "\0__pigeon_nil\0"
-
-local function packArgs(values: { any }, count: number): { any }
-	local out = table.create(count)
-	for index = 1, count do
-		local value = values[index]
-		if value == nil then
-			out[index] = NIL
-		else
-			out[index] = value
-		end
+local function notify(callback: (...any) -> (), packet: Packet)
+	if packet.player then
+		task.spawn(callback, packet.player, table.unpack(packet.args, 1, packet.count))
+	else
+		task.spawn(callback, table.unpack(packet.args, 1, packet.count))
 	end
-	return out
 end
 
-local function unpackArgs(payload: any): ({ any }, number)
-	if type(payload) ~= "table" then
-		return {}, 0
-	end
-
-	local count = payload.n or #payload
-	local out = table.create(count)
-	for index = 1, count do
-		local value = payload[index]
-		if value ~= NIL then
-			out[index] = value
-		end
-	end
-	return out, count
-end
-
-local function serve(self: any, callbacks: { (...any) -> ...any }, packet: Packet)
-	local args, count = packet.args, packet.count
+local function answer(self: any, responder: (...any) -> ...any, packet: Packet)
 	local player = packet.player
 
-	for _, callback in table.clone(callbacks) do
-		local results = table.pack(pcall(function()
-			if player then
-				return callback(player, table.unpack(args, 1, count))
-			end
-			return callback(table.unpack(args, 1, count))
-		end))
+	local results = table.pack(pcall(function()
+		if player then
+			return responder(player, table.unpack(packet.args, 1, packet.count))
+		end
+		return responder(table.unpack(packet.args, 1, packet.count))
+	end))
 
-		if not results[1] then
-			warn(string.format(ERRORS.CALLBACK_ERROR, "listener", packet.event, tostring(results[2])))
-		elseif packet.promiseId then
-			local returned = table.move(results, 2, results.n, 1, {})
-			Network.Respond(packet.transformerId, packet.promiseId, packArgs(returned, results.n - 1), player)
+	if not results[1] then
+		warn(string.format(ERRORS.CALLBACK_ERROR, "responder", packet.event, tostring(results[2])))
+		return
+	end
+
+	if packet.promiseId then
+		local returned = table.move(results, 2, results.n, 1, {})
+		Network.Respond(packet.bucket, packet.promiseId, { args = returned, n = results.n - 1 }, player)
+	end
+end
+
+local function serve(self: any, packet: Packet)
+	if packet.promiseId then
+		local responder = self._responder[packet.event]
+		if responder then
+			answer(self, responder, packet)
+		end
+		return
+	end
+
+	local listeners = self._listeners[packet.event]
+	if not listeners then
+		return
+	end
+	for _, callback in table.clone(listeners) do
+		notify(callback, packet)
+	end
+end
+
+local function handled(self: any, event: string, isRequest: boolean): boolean
+	if isRequest then
+		return self._responder[event] ~= nil
+	end
+	local listeners = self._listeners[event]
+	return listeners ~= nil and #listeners > 0
+end
+
+local function unbindIfIdle(self: any, event: string)
+	if handled(self, event, true) or handled(self, event, false) then
+		return
+	end
+	local disconnect = self._bound[event]
+	if disconnect then
+		disconnect()
+		self._bound[event] = nil
+	end
+end
+
+local function replay(self: any, event: string, isRequest: boolean, handler: (...any) -> ...any)
+	local queue = self._held[event]
+	if not queue then
+		return
+	end
+
+	local now = os.clock()
+	local kept = {}
+
+	for _, packet in queue do
+		if now - packet.at >= HELD_TTL then
+			continue
+		end
+		if (packet.promiseId ~= nil) ~= isRequest then
+			table.insert(kept, packet)
+			continue
+		end
+		if isRequest then
+			task.spawn(answer, self, handler, packet)
+		else
+			notify(handler, packet)
 		end
 	end
+
+	self._held[event] = if #kept > 0 then kept else nil
 end
 
 local function keep(self: any, packet: Packet)
@@ -167,20 +208,21 @@ local function route(self: any, event: string, ...: any)
 		return
 	end
 
-	local transformerId, payload, promiseId
+	local bucket, payload, promiseId
 	local player: Player? = nil
 
 	if IS_SERVER then
-		player, transformerId, payload, promiseId = ...
+		player, bucket, payload, promiseId = ...
 	else
-		transformerId, payload, promiseId = ...
+		bucket, payload, promiseId = ...
 	end
 
 	if IS_SERVER and player and self._handshake and event ~= EV_HANDSHAKE and not self._authed[player] then
 		return
 	end
 
-	local args, count = unpackArgs(payload)
+	local args: { any } = if type(payload) == "table" then payload.args else {}
+	local count: number = if type(payload) == "table" then payload.n or 0 else 0
 
 	local resolved: string
 	resolved, args = applyMiddleware(self._incoming, "incoming", event, args, player)
@@ -192,20 +234,18 @@ local function route(self: any, event: string, ...: any)
 		args = args,
 		count = count,
 		player = player,
-		transformerId = transformerId,
+		bucket = bucket,
 		promiseId = promiseId,
 	}
 
-	local callbacks = self._listeners[resolved]
-	if callbacks and #callbacks > 0 then
-		serve(self, callbacks, packet)
+	if handled(self, resolved, promiseId ~= nil) then
+		serve(self, packet)
 		return
 	end
 
 	if resolved ~= event then
 		if promiseId then
-
-			Network.Respond(transformerId, promiseId, {}, player)
+			Network.Respond(bucket, promiseId, nil, player)
 		end
 		return
 	end
@@ -236,7 +276,7 @@ local function prepare(self: any, event: string, player: Player?, ...: any): (st
 	local resolved: string
 	resolved, plain = applyMiddleware(self._outgoing, "outgoing", event, plain, player)
 
-	return resolved, packArgs(plain, math.max(#plain, args.n))
+	return resolved, { args = plain, n = math.max(#plain, args.n) }
 end
 
 function Carrier.On(self: any, event: string, Callback: (...any) -> ())
@@ -250,43 +290,47 @@ function Carrier.On(self: any, event: string, Callback: (...any) -> ())
 	table.insert(self._listeners[event], Callback)
 	bind(self, event)
 
-	local queue = self._held[event]
-	if not queue then
-		return
-	end
-	self._held[event] = nil
-
-	local now = os.clock()
-	for _, packet in queue do
-		if now - packet.at < HELD_TTL then
-			task.spawn(serve, self, { Callback }, packet)
-		end
-	end
+	replay(self, event, false, Callback)
 end
 
-function Carrier.Off(self: any, event: string, Callback: (() -> ())?)
-	local callbacks = self._listeners[event]
-	if not callbacks then
+function Carrier.When(self: any, event: string, Callback: ((...any) -> ...any)?)
+	if self._dropped then
 		return
 	end
 
+	if Callback == nil then
+		self._responder[event] = nil
+		unbindIfIdle(self, event)
+		return
+	end
+
+	self._responder[event] = Callback
+	bind(self, event)
+
+	replay(self, event, true, Callback)
+end
+
+function Carrier.Off(self: any, event: string, Callback: ((...any) -> ...any)?)
 	if Callback then
-		local index = table.find(callbacks, Callback)
-		if index then
-			table.remove(callbacks, index)
+		local callbacks = self._listeners[event]
+		if callbacks then
+			local index = table.find(callbacks, Callback)
+			if index then
+				table.remove(callbacks, index)
+			end
+			if #callbacks == 0 then
+				self._listeners[event] = nil
+			end
+		end
+		if self._responder[event] == Callback then
+			self._responder[event] = nil
 		end
 	else
 		self._listeners[event] = nil
+		self._responder[event] = nil
 	end
 
-	if not self._listeners[event] or #self._listeners[event] == 0 then
-		self._listeners[event] = nil
-		local disconnect = self._bound[event]
-		if disconnect then
-			disconnect()
-			self._bound[event] = nil
-		end
-	end
+	unbindIfIdle(self, event)
 end
 
 function Carrier.UseHandshake(self: any, Callback: (Player, ...any) -> boolean)
@@ -453,8 +497,10 @@ function Carrier.Call(self: any, event: string, ...: any): ...any
 	if not ok or type(response) ~= "table" then
 		return nil
 	end
-	local values, count = unpackArgs(response)
-	return table.unpack(values, 1, count)
+	if type(response) ~= "table" then
+		return nil
+	end
+	return table.unpack(response.args, 1, response.n or 0)
 end
 
 function Carrier.CallTo(self: any, Target: Player, Event: string, ...: any): ...any
@@ -479,8 +525,10 @@ function Carrier.CallTo(self: any, Target: Player, Event: string, ...: any): ...
 	if type(response) ~= "table" then
 		return nil
 	end
-	local values, count = unpackArgs(response)
-	return table.unpack(values, 1, count)
+	if type(response) ~= "table" then
+		return nil
+	end
+	return table.unpack(response.args, 1, response.n or 0)
 end
 
 local function firstUnapproved(self: any, members: { Player }): Player?
@@ -702,6 +750,7 @@ function Carrier.Destroy(self: any)
 	end
 
 	table.clear(self._listeners)
+	table.clear(self._responder)
 
 	table.clear(self._held)
 	table.clear(self._rooms)
@@ -747,11 +796,11 @@ local function installProtocol(self: any)
 	end
 
 	if IS_SERVER then
-		Carrier.On(self, EV_PING, function()
+		Carrier.When(self, EV_PING, function()
 			return "pong"
 		end)
 
-		Carrier.On(self, EV_HANDSHAKE, function(player: Player, ...: any)
+		Carrier.When(self, EV_HANDSHAKE, function(player: Player, ...: any)
 			if not self._handshake then
 				return true
 			end
@@ -775,7 +824,7 @@ local function installProtocol(self: any)
 			return false
 		end)
 
-		Carrier.On(self, EV_TABLE_REQUEST, function(player: Player, id: string)
+		Carrier.When(self, EV_TABLE_REQUEST, function(player: Player, id: string)
 			local staged = self._tables[id]
 			if not staged then
 				warn(string.format(ERRORS.NO_TABLE, id))
@@ -869,6 +918,7 @@ return function(
 	self._name = name
 	self._ownsTransformer = opts.Transformer == nil
 	self._listeners = {}
+	self._responder = {}
 	self._bound = {}
 	self._held = {}
 	self._incoming = {}

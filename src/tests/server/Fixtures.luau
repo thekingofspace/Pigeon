@@ -56,33 +56,40 @@ function Fixtures.build()
 
 	inbox:hookServer(echo, "Emit", "Echo.Emit")
 
-	echo:On("Echo", function(_player: Player, ...: any)
+	inbox:hookServer(echo, "Shared", "Echo.SharedOn")
+	echo:When("Shared", function()
+		return "from the responder"
+	end)
+
+	inbox:hookServer(echo, "OnlyOn", "Echo.OnlyOn")
+
+	echo:When("Echo", function(_player: Player, ...: any)
 		return ...
 	end)
 
-	echo:On("Sum", function(_player: Player, left: number, right: number)
+	echo:When("Sum", function(_player: Player, left: number, right: number)
 		return left + right
 	end)
 
-	echo:On("Multi", function()
+	echo:When("Multi", function()
 		return 1, "two", true
 	end)
 
-	echo:On("Trailing", function()
+	echo:When("Trailing", function()
 		return "first", nil, "third"
 	end)
 
-	echo:On("Nothing", function() end)
+	echo:When("Nothing", function() end)
 
-	echo:On("Fails", function()
+	echo:When("Fails", function()
 		error("a listener that throws must not answer the Call")
 	end)
 
-	echo:On("WhoAmI", function(player: Player)
+	echo:When("WhoAmI", function(player: Player)
 		return player.Name, player.UserId
 	end)
 
-	echo:On("Slow", function()
+	echo:When("Slow", function()
 		task.wait(1.2)
 		return "eventually"
 	end)
@@ -90,7 +97,7 @@ function Fixtures.build()
 	local guarded = Pigeon.new(Protocol.Guarded)
 	Fixtures.carriers[Protocol.Guarded] = guarded
 	inbox:hookServer(guarded, "Emit", "Guarded.Emit")
-	guarded:On("Ask", function()
+	guarded:When("Ask", function()
 		return "answered"
 	end)
 
@@ -234,7 +241,7 @@ function Fixtures.build()
 	local control = Pigeon.new(Protocol.Control)
 	Fixtures.carriers[Protocol.Control] = control
 
-	control:On("Do", function(player: Player, action: string, payload: any)
+	control:When("Do", function(player: Player, action: string, payload: any)
 		local handler = Actions[action]
 		if not handler then
 			return false, "unknown control action: " .. tostring(action)
@@ -340,6 +347,13 @@ end
 
 Actions.revoke = function(player, payload)
 	return carrier(payload.carrier):Revoke(player)
+end
+
+Actions.addLateResponder = function()
+	carrier(Protocol.Echo):When("LateResponder", function()
+		return "answered late"
+	end)
+	return true
 end
 
 Actions.isAuthed = function(player, payload)

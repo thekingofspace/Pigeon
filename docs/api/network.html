@@ -52,23 +52,30 @@ local Network = Pigeon.Network</code></pre>
 <h2>What a packet looks like</h2>
 
 <p>
-	Every ref carries four kinds of packet. The first value of the fire says which kind it
-	is, and the second is always the uuid of the transformer it belongs to.
+	Every fire puts two values on the wire: a <code>buffer</code> holding the bookkeeping,
+	and a plain array holding your arguments. The buffer says which of four kinds the
+	packet is.
 </p>
 
 <div class="table-wrap">
 <table>
 	<thead>
-		<tr><th>Kind</th><th>Values on the wire</th><th>Raised by</th></tr>
+		<tr><th>Kind</th><th>What the buffer holds</th><th>Raised by</th></tr>
 	</thead>
 	<tbody>
-		<tr><td><code>"push"</code></td><td><code>kind, transformerId, event, data</code></td><td><code>Push</code>, <code>Broadcast</code></td></tr>
-		<tr><td><code>"call"</code></td><td><code>kind, transformerId, event, promiseId, data</code></td><td><code>Call</code>, <code>BroadcastCall</code></td></tr>
-		<tr><td><code>"respond"</code></td><td><code>kind, transformerId, promiseId, data</code></td><td><code>Respond</code></td></tr>
-		<tr><td><code>"auth"</code></td><td><code>kind, transformerId, channel</code></td><td><code>Ready</code></td></tr>
+		<tr><td>push</td><td>kind, event, argument count, nil bits</td><td><code>Push</code>, <code>Broadcast</code></td></tr>
+		<tr><td>call</td><td>the same, plus a request id</td><td><code>Call</code>, <code>BroadcastCall</code></td></tr>
+		<tr><td>respond</td><td>kind, request id, argument count, nil bits</td><td><code>Respond</code></td></tr>
+		<tr><td>auth</td><td>kind, channel name</td><td><code>Ready</code></td></tr>
 	</tbody>
 </table>
 </div>
+
+<p>
+	The transformer uuid is not on the wire. A reply goes back on the ref the request
+	arrived on, which the receiver already knows, so there is nothing to send. Sizes and
+	the reasoning are in <a href="../guide/optimizations.html">Optimizations</a>.
+</p>
 
 <h3>Event names and channels</h3>
 
@@ -88,19 +95,20 @@ local Network = Pigeon.Network</code></pre>
 <h3>What data is</h3>
 
 <p>
-	<code>data</code> is one value and <code>Network</code> never looks inside it. A carrier
-	fills it with a plain list of the arguments you passed, one per slot, with no holes.
-	That matters because a list with a gap in it loses its length on the way across, and
-	the far side would stop reading at the first hole.
+	<code>data</code> is a small record holding the arguments and how many there are:
+	<code>{ args = {...}, n = 3 }</code>. A carrier builds it, and
+	<code>Network</code> reads only those two fields. Your values inside
+	<code>args</code> are never inspected or rewritten.
 </p>
 
 <p>
-	So an argument that was <code>nil</code> does not travel as a hole. The carrier swaps
-	it for a private sentinel string on the way out and turns it back into
-	<code>nil</code> on arrival, which is why
-	<code>Emit("Hit", 1, nil, 6)</code> reaches the other side as three arguments. Return
-	values from a listener are packed the same way. See
-	<a href="../guide/sending.html#arguments">Arguments</a>.
+	The count is carried in the meta buffer rather than alongside the list, and an
+	argument that was <code>nil</code> is recorded as a bit there too. That is why
+	<code>Emit("Hit", 1, nil, 6)</code> arrives as three arguments rather than stopping at
+	the gap. Return values from a responder are packed the same way. See
+	<a href="../guide/optimizations.html">Optimizations</a> for the format and
+	<a href="../guide/sending.html#arguments">Arguments</a> for what it means when you
+	send.
 </p>
 
 <div class="flow">
@@ -377,8 +385,8 @@ print(Network.KnownTransformers) --&gt; before</code></pre>
 		<tr><th>Side</th><th>Arguments</th></tr>
 	</thead>
 	<tbody>
-		<tr><td>Server</td><td><code>player, transformerId, data, promiseId?</code></td></tr>
-		<tr><td>Client</td><td><code>transformerId, data, promiseId?</code></td></tr>
+		<tr><td>Server</td><td><code>player, bucket, data, promiseId?</code></td></tr>
+		<tr><td>Client</td><td><code>bucket, data, promiseId?</code></td></tr>
 	</tbody>
 </table>
 </div>
@@ -390,7 +398,7 @@ print(Network.KnownTransformers) --&gt; before</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>local stop = Network.Receive("Shop\0Buy", function(player, transformerId, data, promiseId)
+<pre><code>local stop = Network.Receive("Shop\0Buy", function(player, bucket, data, promiseId)
 	print(player.Name, "sent Buy")
 end)
 
@@ -411,10 +419,12 @@ stop()</code></pre>
 <div class="note">
 	<p class="note__title">Note</p>
 	<p>
-		<code>data</code> is the raw payload. A carrier packs its arguments into a gapless
-		list, so listening to a carrier's traffic here hands you that list rather than the
-		arguments themselves, and the carrier's middleware does not run. A slot holding
-		the sentinel string is an argument that was <code>nil</code>.
+		<code>data</code> is the raw payload, the <code>{ args = {...}, n = 3 }</code> record
+		a carrier builds. Listening to a carrier's traffic here hands you that record
+		rather than the arguments themselves, and the carrier's middleware does not run.
+		An argument that was <code>nil</code> is already back in place in
+		<code>args</code>, because the bits saying so were read out of the meta buffer
+		before you were called.
 	</p>
 </div>
 
@@ -446,13 +456,13 @@ stop()</code></pre>
 
 <p>
 	After the event name the callback gets exactly what a <code>Receive</code> callback
-	would have got for that packet: <code>player, transformerId, data, promiseId?</code> on
+	would have got for that packet: <code>player, bucket, data, promiseId?</code> on
 	the server, and the same list without the player on the client.
 </p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>local stop = Network.ReceiveChannel("Shop", function(event, player, transformerId, data)
+<pre><code>local stop = Network.ReceiveChannel("Shop", function(event, player, bucket, data)
 	print(player.Name, "sent", event, "which nothing is bound to")
 end)
 
@@ -480,7 +490,7 @@ stop()</code></pre>
 		</tr>
 		<tr>
 			<td>Callback gets</td>
-			<td><code>player, transformerId, data, promiseId?</code> on the server, one less on the client.</td>
+			<td><code>player, bucket, data, promiseId?</code> on the server, one less on the client.</td>
 			<td>The wire event name, then that same list.</td>
 		</tr>
 		<tr>
@@ -649,7 +659,7 @@ print(answer)</code></pre>
 <h3>Respond <span class="badge badge--shared">Shared</span></h3>
 
 <div class="api">
-	<pre class="api__sig"><code>Network.Respond(transformerId: string, promiseId: string, data: any, player: Player?) -> ()</code></pre>
+	<pre class="api__sig"><code>Network.Respond(bucket: number, promiseId: number, data: any, player: Player?) -> ()</code></pre>
 </div>
 
 <p>
@@ -663,10 +673,10 @@ print(answer)</code></pre>
 		<tr><th>Parameter</th><th>Type</th><th>What it is</th></tr>
 	</thead>
 	<tbody>
-		<tr><td><code>transformerId</code></td><td><code>string</code></td><td>The uuid string your <code>Receive</code> callback was handed. Not the transformer object.</td></tr>
-		<tr><td><code>promiseId</code></td><td><code>string</code></td><td>The promise id from the same callback.</td></tr>
+		<tr><td><code>bucket</code></td><td><code>number</code></td><td>The bucket your <code>Receive</code> callback was handed. It says which ref the request arrived on.</tr>
+		<tr><td><code>promiseId</code></td><td><code>number</code></td><td>The request id from the same callback.</tr>
 		<tr><td><code>data</code></td><td><code>any</code></td><td>The response payload.</td></tr>
-		<tr><td><code>player</code></td><td><code>Player?</code></td><td>Who to answer. Required on the server, ignored on the client.</td></tr>
+		<tr><td><code>player</code></td><td><code>Player?</code></td><td>Who to answer. Needed on the server, where leaving it out silently drops the reply. Ignored on the client.</td></tr>
 	</tbody>
 </table>
 </div>
@@ -687,7 +697,7 @@ print(answer)</code></pre>
 	<tbody>
 		<tr>
 			<td>Server</td>
-			<td>Fires straight at that player. Never buffered, because the caller is already waiting on it. A player who has left is skipped. Leave <code>player</code> out and it errors.</td>
+			<td>Fires straight at that player. Never buffered, because the caller is already waiting on it. The target has to be an Instance, must not be marked as departed, and must still have a parent, or the reply is dropped without a word. Leaving <code>player</code> out fails that check like anything else, so the call returns quietly rather than erroring.</td>
 		</tr>
 		<tr>
 			<td>Client</td>
@@ -699,12 +709,12 @@ print(answer)</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
-<pre><code>Network.Receive("Shop\0Buy", function(player, transformerId, data, promiseId)
+<pre><code>Network.Receive("Shop\0Buy", function(player, bucket, data, promiseId)
 	if not promiseId then
 		return -- A Push, not a Call. Nobody is waiting.
 	end
 
-	Network.Respond(transformerId, promiseId, "sold", player)
+	Network.Respond(bucket, promiseId, "sold", player)
 end)</code></pre>
 </div>
 
@@ -712,8 +722,8 @@ end)</code></pre>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="client">Client</span>
-<pre><code>Network.Receive("Quiz\0Answer", function(transformerId, data, promiseId)
-	Network.Respond(transformerId, promiseId, "42")
+<pre><code>Network.Receive("Quiz\0Answer", function(bucket, data, promiseId)
+	Network.Respond(bucket, promiseId, "42")
 end)
 
 -- Nothing arrives on this channel until the client asks for it.

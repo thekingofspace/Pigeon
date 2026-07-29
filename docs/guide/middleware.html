@@ -38,8 +38,9 @@
 
 <p>
 	Adds a function to the end of the inbound chain. It runs for each packet this carrier
-	receives, before your <code>On</code> handlers see it. Replies to a <code>Call</code>
-	are the one exception, and they are covered further down.
+	receives, before your <code>On</code> listeners or your <code>When</code> responder
+	see it. Replies to a <code>Call</code> are the one exception, and they are covered
+	further down.
 </p>
 
 <div class="table-wrap">
@@ -69,8 +70,8 @@ end)</code></pre>
 
 <p>
 	Adds a function to the end of the outbound chain. It runs for each packet this carrier
-	sends, just before the packet is handed to the transport. The value a listener returns
-	to answer a request does not count as a send here.
+	sends, just before the packet is handed to the transport. The value a
+	<code>When</code> responder returns to answer a request does not count as a send here.
 </p>
 
 <div class="table-wrap">
@@ -205,8 +206,8 @@ end)</code></pre>
 <h3>Replies skip both chains</h3>
 
 <p>
-	The value a listener returns to answer a <code>Call</code> or a <code>CallTo</code>
-	does not go through middleware. A reply travels back on its own path, so the outgoing
+	The value a <code>When</code> responder returns to answer a <code>Call</code> or a
+	<code>CallTo</code> does not go through middleware. A reply travels back on its own path, so the outgoing
 	chain on the answering machine never sees it, and neither does the incoming chain on
 	the asking machine. Middleware only ever sees the request half of a round trip.
 	See <a href="requests.html">Requests and Replies</a>.

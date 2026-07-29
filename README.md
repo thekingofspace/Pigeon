@@ -25,7 +25,7 @@ the client, and the two are talking.
 local Pigeon = require(ReplicatedStorage.Pigeon)
 local shop = Pigeon.new("Shop")
 
-shop:On("Buy", function(player, itemId)
+shop:When("Buy", function(player, itemId)
 	return giveItem(player, itemId)
 end)
 

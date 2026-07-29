@@ -373,7 +373,7 @@ return function(TestKit: any, Fixtures: any): { any }
 		end)
 		;(carrier :: any)._authed[alice] = true
 
-		local listener = (carrier :: any)._listeners["__pigeon_handshake"][1]
+		local listener = (carrier :: any)._responder["__pigeon_handshake"]
 		local answer = listener(alice)
 
 		t.eq(answer, false, "the client is told no")
@@ -403,7 +403,7 @@ return function(TestKit: any, Fixtures: any): { any }
 		;(staged :: any)._subscribers[alice] = true
 
 		allow = false
-		local listener = (carrier :: any)._listeners["__pigeon_handshake"][1]
+		local listener = (carrier :: any)._responder["__pigeon_handshake"]
 		t.eq(listener(alice), false)
 
 		t.eq((carrier :: any)._authed[alice], nil)

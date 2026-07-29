@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Why Pigeon | Pigeon</title>
-<meta name="description" content="What one RemoteEvent per feature costs you, and what Pigeon does instead.">
+<meta name="description" content="What one RemoteEvent per feature costs you, what Pigeon does instead, and why it is built that way.">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
 </head>
@@ -19,7 +19,8 @@
 <p class="lead">
 	Almost every Roblox game networks the same way: one RemoteEvent per feature. That
 	shape causes five specific problems. This page names them, shows what Pigeon does
-	about each, and then says what is actually new here.
+	about each, says why the design is the way it is rather than some other way, and
+	ends with the cases where you should not use it.
 </p>
 
 <h2>What everyone does today</h2>
@@ -273,8 +274,9 @@ combat:Destroy()</code></pre>
 <h2>What is actually new here</h2>
 
 <p>
-	Plenty of libraries wrap RemoteEvents in nicer functions. Four things in Pigeon
-	are not wrapping.
+	Plenty of libraries wrap RemoteEvents in nicer functions. Five things in Pigeon
+	are not wrapping. Each one had an obvious simpler option that was rejected, so
+	each section below says what that option was and why it does not work.
 </p>
 
 <h3>A shared hashed remote pool</h3>
@@ -283,9 +285,107 @@ combat:Destroy()</code></pre>
 	Instance count stops tracking feature count. A stable hash of the transformer
 	uuid picks the remote, and a carrier takes that uuid from its channel name. Two
 	hundred channels ride on thirteen remotes and their thirteen unreliable twins.
-	The server sizes the pool and publishes that size as an attribute, so both
-	machines hash into the same slot rather than guessing from their own local
-	counts.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>At 200 channels</th><th>One remote per feature</th><th>Pigeon</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>Instances in <code>ReplicatedStorage</code></td><td>200</td><td>26: thirteen buckets, each with an unreliable twin</td></tr>
+		<tr><td>Instances you name and parent</td><td>200</td><td>None. You name channels, not Instances.</td></tr>
+		<tr><td>What the client waits on</td><td>200, one per feature</td><td>One folder. Refs are bound as they replicate.</td></tr>
+		<tr><td>Channels sharing a remote</td><td>1</td><td>About 15</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Thirteen is not a round number chosen for the example. The server counts its
+	transformers, divides by 16, rounds up and clamps the result between 1 and 32.
+	200 over 16 is 12.5, so 13.
+</p>
+
+<h4>Why hash rather than hand out slots in order</h4>
+
+<p>
+	The simple version is a counter: the first transformer takes ref 1, the second
+	takes ref 2. It fails because the two machines would have to agree on the order,
+	and they never see the same one. The server creates transformers in the order its
+	scripts run. The client creates its own in the order its scripts run. Either side
+	can add one on any frame and drop one later. Agreeing on a shared numbering would
+	need a registry and a round trip before the first packet could leave.
+</p>
+
+<p>
+	A hash needs no agreement at all. Both sides already hold the same string: the
+	transformer uuid, which for a plain carrier is the channel name you passed to
+	<code>Pigeon.new</code>. FNV-1a folds that string to a number, the number is taken
+	modulo the pool size, and one is added so buckets start at 1.
+	<code>Pigeon.new("Shop")</code> on the server and <code>Pigeon.new("Shop")</code>
+	on the client work out the same bucket without either being told the other exists.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Picking a remote, worked out separately on each machine</p>
+	<div class="flow__row">
+		<span class="flow__box flow__box--brand">transformer uuid</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">FNV-1a hash</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">modulo the pool size</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">PigeonRef_N</span>
+	</div>
+</div>
+
+<p>
+	It also stays put. Adding a "Combat" channel does not move "Shop", and destroying
+	one does not either. A channel's bucket only changes when the pool size itself
+	changes, which happens on multiples of 16. A counter would reshuffle every time a
+	system came up in a different order.
+</p>
+
+<h4>Why the server publishes the count</h4>
+
+<p>
+	The bucket is the hash modulo the pool size, so the size has to be the same number
+	on both machines or they land on different remotes. Neither side can work it out
+	alone, because the size comes from how many transformers exist and the two sides
+	do not hold the same set. A client with three of its own would compute a pool of 1
+	while a server with 100 transformers is using 7. Worse in the other direction, a
+	client that guessed high would sit on <code>WaitForChild</code> for a
+	<code>PigeonRef_9</code> the server never made, and that wait never ends.
+</p>
+
+<p>
+	So the server is the one that decides. It writes the size to a
+	<code>RefCount</code> attribute on the <code>PigeonRefs</code> folder and clients
+	read it there. A client that has not received the attribute yet uses 1, which is
+	always safe because bucket 1 is always in the pool.
+</p>
+
+<h4>What sharing a remote costs</h4>
+
+<p>
+	The tradeoff is real: at 200 channels roughly 15 of them ride the same
+	RemoteEvent. It does not cause mixups, because channels are not kept apart by
+	which remote they use. Every packet carries its own address. The event string on
+	the wire is the carrier name, a zero byte, then the event name, and both sides
+	route on that string rather than on the remote it arrived through. That is also
+	why a pool resize is harmless. If the two machines briefly disagree about the size
+	while the attribute replicates, a packet goes out on a different lane for a moment
+	and still lands in the same handler.
+</p>
+
+<p>
+	What you lose is legibility. <code>PigeonRef_4</code> tells you nothing about which
+	feature it serves, so you cannot read traffic per feature out of the explorer the
+	way you can with named remotes. The two constants are judgement calls as well, not
+	measurements: 16 channels per remote keeps the folder small, and the ceiling of 32
+	stops a game with hundreds of transformers from filling
+	<code>ReplicatedStorage</code> with remotes it barely uses.
 </p>
 
 <p>See <a href="ref-pool.html">The Ref Pool</a>.</p>
@@ -295,9 +395,59 @@ combat:Destroy()</code></pre>
 <p>
 	Not "the client is loaded", which is one flag for the whole game. Each channel
 	declares itself ready on its own, and only that channel's backlog is released.
-	One system coming up early cannot flush another system's messages into handlers
-	that have not been registered yet.
 </p>
+
+<h4>Why not one flag per client</h4>
+
+<p>
+	Because one flag is released by whichever system happens to come up first, and it
+	releases everything. The shop finishes loading, the flag flips, and the combat
+	backlog is delivered into handlers that have not been registered yet. That is the
+	original race, moved later and made harder to see, since it only shows up when
+	load order shifts.
+</p>
+
+<p>
+	Keying readiness and the backlog by channel and player means <code>Init</code> on
+	one carrier says one thing and one thing only: this channel's handlers are in
+	place. Nothing the client has not asked for yet is released. A client can bring
+	systems up one at a time, in whatever order suits it, and each one opens on its
+	own clock.
+</p>
+
+<div class="flow">
+	<p class="flow__label">Two channels, two clocks</p>
+	<div class="flow__row">
+		<span class="flow__box">Shop handlers registered</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">shop:Init()</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">Shop backlog released</span>
+	</div>
+	<div class="flow__row">
+		<span class="flow__box">Combat still loading</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box">no Init yet</span>
+		<span class="flow__arrow">&rarr;</span>
+		<span class="flow__box flow__box--brand">Combat backlog stays held</span>
+	</div>
+</div>
+
+<p>
+	The cost is that every carrier on the client needs its own <code>Init</code>, and a
+	carrier that never calls it never receives anything. That is the deal, and it is
+	the most common thing to forget when you start.
+</p>
+
+<div class="note">
+	<p class="note__title">Note</p>
+	<p>
+		Replies to a <code>Call</code> skip the queue on purpose. A reply is addressed
+		to a thread that is already sitting there waiting for it, not to a handler that
+		may not exist yet, so it goes straight out. That is why a request works before
+		<code>Init</code> while a broadcast does not.
+	</p>
+</div>
 
 <p>See <a href="startup.html">Startup and Buffering</a>.</p>
 
@@ -311,16 +461,153 @@ combat:Destroy()</code></pre>
 	<code>Broadcast</code> on a moderator channel is safe to write.
 </p>
 
+<h4>Why the filter runs before the send</h4>
+
+<p>
+	The tempting shortcut is to broadcast to everyone and let each client ignore what
+	it should not have. It does not work, for a reason no amount of client code fixes:
+	once the bytes are on the machine they are readable. Whether the client shows them
+	is up to whoever is running the client. A moderator alert filtered out by client
+	code has still been delivered to every player in the server.
+</p>
+
+<p>
+	So the filter is on the way out. <code>Broadcast</code>,
+	<code>BroadcastTo</code>, <code>BroadcastExcept</code> and <code>SendToRoom</code>
+	all resolve their recipient list against the approval list first, and if that list
+	comes back empty nothing is packed and nothing is sent. <code>CallTo</code> returns
+	<code>nil</code> for an unapproved target without a packet leaving the server. Data
+	a client should not see never leaves the server, so there is nothing to ignore.
+</p>
+
+<p>
+	Inbound is the same door in reverse. A packet from a client that has not passed the
+	guard is dropped before middleware runs and before any handler is looked up, with
+	the handshake itself as the only exception. That is what makes a handler on a
+	guarded carrier safe to write plainly: if it runs at all, the player passed.
+</p>
+
 <div class="note">
 	<p class="note__title">Note</p>
 	<p>
 		The guard runs on every attempt, so a client refused now can be admitted later
 		without rebuilding anything. A later attempt that fails also revokes an earlier
-		grant. Keep the guard cheap, because a client may ask as often as it likes.
+		grant, and a guard that throws counts as a refusal, which clears an approval the
+		player already had. Keep the guard cheap, because a client may ask as often as it
+		likes.
 	</p>
 </div>
 
+<p>
+	The honest costs: approval is per carrier, so a player approved on "Moderation" is
+	not approved on "Admin" until that carrier's guard says so. And a message sent
+	while a client is locked out is gone rather than queued, because the server has no
+	reason to believe it will ever be allowed to send it.
+</p>
+
 <p>See <a href="handshakes.html">Handshakes</a>.</p>
+
+<h3>On and When are two different things</h3>
+
+<p>
+	Traffic is routed by the kind of packet that arrived, not by which handlers happen
+	to be registered.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>What you send</th><th>Where it goes</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td><code>Emit</code>, <code>Broadcast</code>, <code>BroadcastTo</code>, <code>BroadcastExcept</code>, <code>SendToRoom</code></td>
+			<td>Every <code>On</code> listener on that event.</td>
+		</tr>
+		<tr>
+			<td><code>Call</code>, <code>CallTo</code></td>
+			<td>The single <code>When</code> responder for that event.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<h4>Why they are not one thing</h4>
+
+<p>
+	One event name is often both a notification and a question. "Score" as something
+	the server announces and "Score" as something a client asks for are different
+	traffic that happen to share a word. Splitting on the kind of packet lets both live
+	on one name, and each goes to the side that can serve it.
+</p>
+
+<p>
+	Route on the handler list instead and one callback has to do both jobs. Then a fire
+	and forget delivery has to decide what to do with whatever that callback returns,
+	and there is no good answer. Nobody asked, so there is nowhere to send it. It gets
+	dropped, quietly, and the code that wrote <code>return true</code> looks correct.
+</p>
+
+<p>
+	Pigeon makes that structural rather than surprising. An <code>On</code> callback is
+	started with <code>task.spawn</code>, so it is already running on its own thread by
+	the time it returns and there is nothing on the other end of its return value by
+	construction. If you want to answer, you write <code>When</code>.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th></th><th><code>On</code></th><th><code>When</code></th></tr>
+	</thead>
+	<tbody>
+		<tr><td>How many per event</td><td>As many as you like. All of them run.</td><td>Exactly one. Registering again replaces it.</td></tr>
+		<tr><td>Thread</td><td>Its own, spawned. Order of completion is not fixed.</td><td>The thread handling the packet.</td></tr>
+		<tr><td>Yielding</td><td>Does not hold up the other listeners.</td><td>Allowed. The caller waits.</td></tr>
+		<tr><td>Return value</td><td>Goes nowhere.</td><td>Sent back as the answer.</td></tr>
+		<tr><td>On error</td><td>A normal Roblox error with a traceback.</td><td>Warns <code>ERR_CALLBACK_ERROR</code> naming "responder". The caller gets no answer and waits out its timeout.</td></tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Both may exist on one event name at once, which is the point. Pigeon's own reserved
+	events follow the same rule and are a fair test of it:
+	<code>__pigeon_ping</code>, <code>__pigeon_handshake</code> and
+	<code>__pigeon_table_request</code> are questions, so they are registered with
+	<code>When</code>. <code>__pigeon_table_patch</code>,
+	<code>__pigeon_table_snapshot</code>, <code>__pigeon_table_release</code> and
+	<code>__pigeon_table_revoke</code> are announcements, so they use <code>On</code>.
+</p>
+
+<div class="note note--warn">
+	<p class="note__title">Careful</p>
+	<p>
+		A request for an event that has <code>On</code> listeners but no
+		<code>When</code> is not answered by those listeners. It is held like any other
+		unhandled packet, for up to 10 seconds, and replayed to the first
+		<code>When</code> that registers. A held request only ever replays to a
+		<code>When</code>, and a held fire and forget only ever replays to an
+		<code>On</code>.
+	</p>
+	<p>
+		The hold is the same length as the default <code>Call</code> timeout, so a
+		responder registered a moment late still answers, and one that never arrives
+		costs the caller a timeout and nothing else.
+	</p>
+</div>
+
+<p>
+	<code>Off</code> follows the same split. Passed a callback, it removes that callback
+	from the <code>On</code> list and clears the responder if that is what it was.
+	Passed no callback, it clears every listener and the responder for that event. The
+	transport binding is only dropped once both sides are empty.
+</p>
+
+<p>
+	See <a href="sending.html">Sending and Receiving</a> and
+	<a href="requests.html">Requests and Replies</a>.
+</p>
 
 <h3>Plain tables that replicate themselves</h3>
 
@@ -342,6 +629,65 @@ combat:Destroy()</code></pre>
 
 <p>See <a href="staged-tables.html">Staged Tables</a>.</p>
 
+<h2>What happens when a client leaves mid request</h2>
+
+<p>
+	Worth saying plainly, because it is the failure every hand written layer hits
+	eventually. A player can disconnect between the moment the server decides to send
+	them something and the moment it actually sends. Firing at a Player object that has
+	left throws, and a throw inside a request handler takes out whatever else that
+	thread was doing.
+</p>
+
+<p>
+	Pigeon checks reachability before every send to a client: the target has to be an
+	Instance, must not be marked as departed, and must still have a parent. The send
+	itself is wrapped as well, so losing the race between the check and the call cannot
+	error the server. That covers replies to a <code>Call</code>, every broadcast, and
+	the release of a buffered backlog.
+</p>
+
+<h2>When not to use Pigeon</h2>
+
+<p>
+	If you have three remotes and no plans to grow, plain RemoteEvents are simpler and
+	Pigeon is a dependency you do not need. Three Instances and three
+	<code>WaitForChild</code> calls are less to hold in your head than channels, a
+	readiness call per channel and a guard model.
+</p>
+
+<div class="table-wrap">
+<table>
+	<thead>
+		<tr><th>If this is you</th><th>Then</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>A handful of remotes, a finished game</td>
+			<td>Stay as you are. The pool saves nothing below 16 transformers, where it is one remote and its unreliable twin, plus a folder and an attribute.</td>
+		</tr>
+		<tr>
+			<td>You need the bytes on the wire minimised</td>
+			<td>This is not that. Every packet carries a kind tag, the transformer uuid, and the channel and event names as strings, and requests carry a GUID as well. A hand rolled buffer format beats it.</td>
+		</tr>
+		<tr>
+			<td>You want to send Instances or functions in your state</td>
+			<td>Staged tables reject them. Send an identifier and look the object up on the far side, or do not use staged tables for it.</td>
+		</tr>
+		<tr>
+			<td>You already have a networking layer your team knows</td>
+			<td>The migration is real work. It only pays if you recognise the five problems above as ones you actually have.</td>
+		</tr>
+	</tbody>
+</table>
+</div>
+
+<p>
+	Nothing stops the two living together. Pigeon does not take over
+	<code>ReplicatedStorage</code> or intercept your remotes, so adding it for the two
+	systems that grew, and leaving the rest alone, is a normal way to start.
+</p>
+
 <h2>Where to go next</h2>
 
 <p>
@@ -351,6 +697,8 @@ combat:Destroy()</code></pre>
 <ul>
 	<li><a href="installation.html">Installation</a> to add Pigeon to a place.</li>
 	<li><a href="getting-started.html">Getting Started</a> to build your first channel.</li>
+	<li><a href="ref-pool.html">The Ref Pool</a> for the transport under all of it.</li>
+	<li><a href="known-issues.html">Known Issues</a> for what is still rough.</li>
 </ul>
 
 <p>

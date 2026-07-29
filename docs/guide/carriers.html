@@ -304,8 +304,8 @@ chat.Unreliable = true -- later sends take the lossy lane</code></pre>
 	<p>
 		Incoming messages are routed by name alone, so two carriers called "Shop" on the
 		same machine share the channel. A packet goes to every carrier that bound its
-		event with <code>On</code>, and every listener those carriers registered for it
-		runs. Register the same handler on each and it runs twice.
+		event with <code>On</code> or <code>When</code>, and every listener those carriers
+		registered for it runs. Register the same handler on each and it runs twice.
 	</p>
 </div>
 
@@ -397,8 +397,9 @@ b:On("Sold", print)
 		<tr><th>Method</th><th>What it does</th></tr>
 	</thead>
 	<tbody>
-		<tr><td><code>On</code></td><td>Listen for an event.</td></tr>
-		<tr><td><code>Off</code></td><td>Stop listening.</td></tr>
+		<tr><td><code>On</code></td><td>Add a fire and forget listener for an event. See <a href="sending.html">Sending and Receiving</a>.</td></tr>
+		<tr><td><code>When</code></td><td>Set the one responder that answers <code>Call</code> and <code>CallTo</code> for an event. See <a href="requests.html">Requests and Replies</a>.</td></tr>
+		<tr><td><code>Off</code></td><td>Take a listener or the responder off an event, or clear both.</td></tr>
 		<tr><td><code>UseIncoming</code>, <code>UseOutgoing</code></td><td>Add middleware. See <a href="middleware.html">Middleware</a>.</td></tr>
 		<tr><td><code>Destroy</code></td><td>Drop the carrier.</td></tr>
 		<tr><td><code>Init</code></td><td>Open the channel for traffic from the server.</td></tr>

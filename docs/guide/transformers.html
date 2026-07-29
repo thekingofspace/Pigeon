@@ -180,7 +180,7 @@ combat:Destroy()</code></pre>
 		Passing options makes the carrier fresh and uncached. <code>Pigeon.new("Damage")</code>
 		somewhere else gives you a <em>different</em> carrier on its own transformer, and the
 		two share the <code>Damage</code> channel: a packet goes to every carrier that bound
-		its event with <code>On</code>, so a handler registered on both fires twice. Hold on
+		its event with <code>On</code> or <code>When</code>, so a handler registered on both fires twice. Hold on
 		to the reference you got here, and keep the receiving side down to one carrier per
 		name. See <a href="carriers.html">Carriers</a>.
 	</p>

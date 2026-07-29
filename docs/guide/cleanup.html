@@ -54,7 +54,7 @@ shop:Destroy()</code></pre>
 	</thead>
 	<tbody>
 		<tr><td>Transport bindings</td><td>Every subscription the carrier made is disconnected. Nothing arrives any more.</td></tr>
-		<tr><td>Listeners</td><td>Cleared. Your <code>On</code> handlers are dropped.</td></tr>
+		<tr><td>Listeners and responders</td><td>Cleared. Your <code>On</code> listeners and your <code>When</code> responders are both dropped.</td></tr>
 		<tr><td>Rooms</td><td>Cleared. Every room this carrier held is gone.</td></tr>
 		<tr><td>Handshake</td><td>The guard is removed and the list of admitted players is emptied.</td></tr>
 		<tr><td>Middleware</td><td>Both chains are emptied, so the closures you passed are released.</td></tr>
@@ -102,7 +102,8 @@ shop:Destroy()   -- fine, does nothing</code></pre>
 		<tr><td><code>Handshake</code></td><td>Returns <code>false</code>.</td></tr>
 		<tr><td><code>Init</code></td><td>Returns the carrier and does nothing else.</td></tr>
 		<tr><td><code>Ping</code></td><td>Returns a number near zero. The round trip never happened.</td></tr>
-		<tr><td><code>Off</code></td><td>Does nothing. The listener list is already empty.</td></tr>
+		<tr><td><code>On</code>, <code>When</code></td><td>Does nothing. Nothing is registered and your callback is not kept.</td></tr>
+		<tr><td><code>Off</code></td><td>Does nothing. The listener list and the responder slot are already empty.</td></tr>
 		<tr><td><code>Destroy</code></td><td>Does nothing.</td></tr>
 	</tbody>
 </table>
@@ -270,7 +271,7 @@ fresh:CaptureTable("Scores", scores)</code></pre>
 <h3 id="off">Off <span class="badge badge--shared">Shared</span></h3>
 
 <div class="api">
-	<pre class="api__sig"><code>carrier:Off(event: string, Callback: (() -> ())?) -> ()</code></pre>
+	<pre class="api__sig"><code>carrier:Off(event: string, Callback: ((...any) -> ...any)?) -> ()</code></pre>
 </div>
 
 <div class="table-wrap">
@@ -280,7 +281,7 @@ fresh:CaptureTable("Scores", scores)</code></pre>
 	</thead>
 	<tbody>
 		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to unbind.</td></tr>
-		<tr><td><code>Callback</code></td><td><code>(() -> ())?</code></td><td>The one handler to drop. Leave it out to drop every handler for the event.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>((...any) -> ...any)?</code></td><td>The one handler to drop, listener or responder. Leave it out to drop every handler for the event.</td></tr>
 	</tbody>
 </table>
 </div>
@@ -407,8 +408,9 @@ print(counts.listeners, counts.pending, counts.bufferedPackets)</code></pre>
 <div class="note">
 	<p class="note__title">Note</p>
 	<p>
-		<code>On</code> returns straight away on a dropped carrier. No listener is
-		registered, nothing is bound underneath, and the callback you passed is not kept,
+		<code>On</code> and <code>When</code> both return straight away on a dropped
+		carrier. No listener and no responder is registered, nothing is bound underneath,
+		and the callback you passed is not kept,
 		so it cannot hold anything alive. That holds whether or not the transformer you
 		passed in is still alive. There is no way to bring a dropped carrier back, so
 		build a new one when you need the channel again. See

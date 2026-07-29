@@ -990,6 +990,222 @@ return function(TestKit: any, where: string): { any }
 	local binding = TestKit.suite("Carrier / listener bookkeeping")
 	table.insert(suites, binding)
 
+	binding:test("On holds as many callbacks as you give it", function(t)
+		local carrier = Pigeon.new(unique("OnMany"), {})
+
+		carrier:On("evt", function() end)
+		carrier:On("evt", function() end)
+		carrier:On("evt", function() end)
+
+		t.eq(#(carrier :: any)._listeners.evt, 3)
+		t.eq((carrier :: any)._responder.evt, nil, "On never fills the responder slot")
+
+		carrier:Destroy()
+	end)
+
+	binding:test("When holds exactly one callback", function(t)
+		local carrier = Pigeon.new(unique("WhenOne"), {})
+		local first = function()
+			return "first"
+		end
+		local second = function()
+			return "second"
+		end
+
+		carrier:When("evt", first)
+		t.eq((carrier :: any)._responder.evt, first)
+
+		carrier:When("evt", second)
+		t.eq((carrier :: any)._responder.evt, second, "calling When again replaces the callback")
+		t.eq((carrier :: any)._listeners.evt, nil, "When never fills the listener list")
+
+		carrier:Destroy()
+	end)
+
+	binding:test("On and When live side by side on one event", function(t)
+		local carrier = Pigeon.new(unique("OnAndWhen"), {})
+		local responder = function()
+			return true
+		end
+
+		carrier:On("evt", function() end)
+		carrier:When("evt", responder)
+
+		t.eq(#(carrier :: any)._listeners.evt, 1)
+		t.eq((carrier :: any)._responder.evt, responder)
+		t.ne((carrier :: any)._bound.evt, nil, "one binding serves both")
+
+		carrier:Destroy()
+	end)
+
+	binding:test("the binding survives until both sides are gone", function(t)
+		local carrier = Pigeon.new(unique("BothBound"), {})
+		local listener = function() end
+		local responder = function()
+			return true
+		end
+
+		carrier:On("evt", listener)
+		carrier:When("evt", responder)
+
+		carrier:Off("evt", listener)
+		t.ne((carrier :: any)._bound.evt, nil, "the responder is still there")
+
+		carrier:Off("evt", responder)
+		t.eq((carrier :: any)._bound.evt, nil, "now nothing handles it")
+
+		carrier:Destroy()
+	end)
+
+	binding:test("Off with no callback clears listeners and the responder", function(t)
+		local carrier = Pigeon.new(unique("OffBoth"), {})
+
+		carrier:On("evt", function() end)
+		carrier:When("evt", function()
+			return true
+		end)
+
+		carrier:Off("evt")
+
+		t.eq((carrier :: any)._listeners.evt, nil)
+		t.eq((carrier :: any)._responder.evt, nil)
+		t.eq((carrier :: any)._bound.evt, nil)
+
+		carrier:Destroy()
+	end)
+
+	binding:test("When on a dropped carrier does nothing", function(t)
+		local transformer = Pigeon.Transformer()
+		local carrier = Pigeon.new(unique("WhenDropped"), { Transformer = transformer })
+
+		carrier:Destroy()
+		carrier:When("evt", function()
+			return true
+		end)
+
+		t.eq((carrier :: any)._responder.evt, nil)
+		t.eq((carrier :: any)._bound.evt, nil)
+
+		transformer:Destroy()
+	end)
+
+	binding:test("Off with a callback clears the responder when it is the responder", function(t)
+		local carrier = Pigeon.new(unique("OffResponderOnly"), {})
+		local listener = function() end
+		local responder = function()
+			return true
+		end
+
+		carrier:On("evt", listener)
+		carrier:When("evt", responder)
+
+		carrier:Off("evt", responder)
+
+		t.eq((carrier :: any)._responder.evt, nil, "the responder is gone")
+		t.eq(#(carrier :: any)._listeners.evt, 1, "and the listener is untouched")
+		t.ne((carrier :: any)._bound.evt, nil, "so the binding stays")
+
+		carrier:Destroy()
+	end)
+
+	binding:test("Off with a listener leaves the responder alone", function(t)
+		local carrier = Pigeon.new(unique("OffListenerOnly"), {})
+		local listener = function() end
+		local responder = function()
+			return true
+		end
+
+		carrier:On("evt", listener)
+		carrier:When("evt", responder)
+
+		carrier:Off("evt", listener)
+
+		t.eq((carrier :: any)._listeners.evt, nil)
+		t.eq((carrier :: any)._responder.evt, responder, "the responder is untouched")
+		t.ne((carrier :: any)._bound.evt, nil)
+
+		carrier:Destroy()
+	end)
+
+	binding:test("one function used as both is removed from both", function(t)
+		local carrier = Pigeon.new(unique("OffBothRoles"), {})
+		local shared = function()
+			return true
+		end
+
+		carrier:On("evt", shared)
+		carrier:When("evt", shared)
+
+		carrier:Off("evt", shared)
+
+		t.eq((carrier :: any)._listeners.evt, nil)
+		t.eq((carrier :: any)._responder.evt, nil)
+		t.eq((carrier :: any)._bound.evt, nil)
+
+		carrier:Destroy()
+	end)
+
+	binding:test("When with no callback drops the responder", function(t)
+		local carrier = Pigeon.new(unique("WhenClear"), {})
+		local listener = function() end
+
+		carrier:On("evt", listener)
+		carrier:When("evt", function()
+			return true
+		end)
+
+		carrier:When("evt", nil)
+
+		t.eq((carrier :: any)._responder.evt, nil, "an inline responder can be dropped without its reference")
+		t.eq(#(carrier :: any)._listeners.evt, 1, "and the listeners are kept")
+		t.ne((carrier :: any)._bound.evt, nil)
+
+		carrier:When("evt", nil)
+		t.noThrow(function()
+			carrier:When("nothing-here", nil)
+		end, "clearing what is not there is harmless")
+
+		carrier:Destroy()
+	end)
+
+	binding:test("When with no callback unbinds when nothing is left", function(t)
+		local carrier = Pigeon.new(unique("WhenClearUnbind"), {})
+
+		carrier:When("evt", function()
+			return true
+		end)
+		t.ne((carrier :: any)._bound.evt, nil)
+
+		carrier:When("evt", nil)
+		t.eq((carrier :: any)._bound.evt, nil)
+
+		carrier:Destroy()
+	end)
+
+	binding:test("Off on an event with only a responder unbinds", function(t)
+		local carrier = Pigeon.new(unique("OffResponderUnbind"), {})
+
+		carrier:When("evt", function()
+			return true
+		end)
+
+		carrier:Off("evt")
+		t.eq((carrier :: any)._responder.evt, nil)
+		t.eq((carrier :: any)._bound.evt, nil)
+
+		carrier:Destroy()
+	end)
+
+	binding:test("Destroy clears the responder too", function(t)
+		local carrier = Pigeon.new(unique("ResponderCleared"), {})
+		carrier:When("evt", function()
+			return true
+		end)
+
+		carrier:Destroy()
+		t.eq(next((carrier :: any)._responder), nil)
+	end)
+
 	binding:test("On binds the transport and Off unbinds it", function(t)
 		local carrier = Pigeon.new(unique("Binding"), {})
 		local handler = function() end

@@ -18,17 +18,25 @@
 
 <p class="lead">
 	This is the fire and forget half of Pigeon. You send a message and carry on. Nothing
-	waits and nothing comes back. If you want an answer, that is
+	waits and nothing comes back. <code>On</code> is the listening side of it. If you want
+	an answer, you want <code>When</code>, over in
 	<a href="requests.html">Requests and Replies</a>.
 </p>
 
 <h2>The shape of it</h2>
 
 <p>
-	One method listens on both sides. One method sends from the client. Three send from
-	the server, and they differ only in who ends up on the recipient list. Rooms add a
-	fourth server send, <code>SendToRoom</code>, which is covered in
+	<code>On</code> listens on both sides. One method sends from the client. Three send
+	from the server, and they differ only in who ends up on the recipient list. Rooms add
+	a fourth server send, <code>SendToRoom</code>, which is covered in
 	<a href="rooms.html">Rooms</a>.
+</p>
+
+<p>
+	Those five sends are the whole of the traffic <code>On</code> hears. Nothing else
+	reaches it. A <code>Call</code> or a <code>CallTo</code> goes to the event's one
+	<code>When</code> responder instead, and never to a listener, whatever you have
+	registered.
 </p>
 
 <div class="flow">
@@ -50,15 +58,15 @@
 <h3>On <span class="badge badge--shared">Shared</span></h3>
 
 <div class="api">
-	<pre class="api__sig"><code>carrier:On(event: string, Callback: (...any) -> ...any) -> ()</code></pre>
+	<pre class="api__sig"><code>carrier:On(event: string, Callback: (...any) -> ()) -> ()</code></pre>
 </div>
 
 <p>
-	Registers a handler for an event. Works on the server and on the client. The channel
-	itself is wired up when the carrier is built, not by <code>On</code>: a carrier
-	subscribes to its whole channel, so a packet for an event you never bound still
-	reaches it and still runs your incoming
-	<a href="middleware.html">middleware</a>. What <code>On</code> adds is the handler,
+	Adds a fire and forget listener for an event. Works on the server and on the client.
+	The channel itself is wired up when the carrier is built, not by <code>On</code>: a
+	carrier subscribes to its whole channel, so a packet for an event you never bound
+	still reaches it and still runs your incoming
+	<a href="middleware.html">middleware</a>. What <code>On</code> adds is the listener,
 	so until you call it nothing runs for that event.
 </p>
 
@@ -69,12 +77,17 @@
 	</thead>
 	<tbody>
 		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to listen for.</td></tr>
-		<tr><td><code>Callback</code></td><td><code>(...any) -> ...any</code></td><td>The handler. On the server it receives the sending player first. What it returns answers a <code>Call</code> or <code>CallTo</code>.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>(...any) -> ()</code></td><td>The listener. On the server it receives the sending player first. Anything it returns is discarded.</td></tr>
 	</tbody>
 </table>
 </div>
 
-<p><strong>Returns</strong> nothing. Keep the function in a local if you want to remove it later with <code>Off</code>.</p>
+<p>
+	<strong>Returns</strong> nothing. Keep the function in a local if you want to remove
+	it later with <code>Off</code>. On a carrier that has been
+	<a href="cleanup.html">dropped</a>, <code>On</code> does nothing at all: the listener
+	is not stored and no error is raised.
+</p>
 
 <div class="code-block">
 	<span class="code-block__label" data-side="server">Server</span>
@@ -118,41 +131,57 @@ shop:Init()</code></pre>
 </table>
 </div>
 
-<h4>Many handlers for one event</h4>
+<h4>Many listeners for one event</h4>
 
 <p>
-	<code>On</code> adds a handler, it does not replace the last one. Call it five times
-	for the same event and all five run, in the order you added them. Adding the same
-	function twice runs it twice, there is no check for that.
+	<code>On</code> adds a listener, it does not replace the last one. Call it five times
+	for the same event and all five run. Adding the same function twice runs it twice,
+	there is no check for that.
 </p>
 
 <pre><code>shop:On("Sold", playSound)
 shop:On("Sold", updateUi)
 shop:On("Sold", logIt)
 
--- One message, three handlers, all of them run.</code></pre>
+-- One message, three listeners, all of them run.</code></pre>
 
 <p>
-	Each handler runs on its own. If one errors, Pigeon warns with
-	<code>ERR_CALLBACK_ERROR</code> and the rest still run. A broken handler cannot take
-	the others down with it.
+	Each one is started with <code>task.spawn</code>, so it gets a thread of its own. A
+	listener that yields does not hold up the next one, and none of them hold up the
+	packet. The flip side is that the order they finish in is not fixed, so do not write
+	two listeners where one depends on the other having already run.
 </p>
 
-<h4>Returning a value</h4>
+<h4>A listener that errors</h4>
 
 <p>
-	Whatever a handler returns is the answer to a <code>Call</code> or
-	<code>CallTo</code>. For a plain fire and forget message the return value is simply
-	ignored, so you can leave it out. See <a href="requests.html">Requests and Replies</a>.
+	Nothing catches it. A listener is spawned rather than wrapped, so an error inside one
+	is an ordinary Roblox error with a full traceback in the output. The other listeners
+	on that event are on their own threads and carry on regardless.
+</p>
+
+<p>
+	There is no <code>ERR_CALLBACK_ERROR</code> warning for a fire and forget listener.
+	That message belongs to <a href="requests.html">responders</a> and to
+	<a href="middleware.html">middleware</a>, which are the two things Pigeon does pcall.
+</p>
+
+<h4>Returning a value goes nowhere</h4>
+
+<p>
+	An <code>On</code> listener cannot answer anything. It is spawned, so by the time it
+	returns there is nothing left holding on to the result and Pigeon drops it. Writing
+	<code>return true</code> at the end of one is harmless and pointless.
 </p>
 
 <div class="note note--warn">
 	<p class="note__title">Careful</p>
 	<p>
-		Every handler replies, but only the first reply is kept. If you put two handlers
-		on an event that clients <code>Call</code>, the one you registered first decides
-		the answer, even when it returns nothing at all. Keep one handler on any event you
-		expect a reply from.
+		To answer a <code>Call</code> or a <code>CallTo</code> you need <code>When</code>,
+		not <code>On</code>. A request for an event that has listeners but no responder is
+		not handed to those listeners at all. It is held for 10 seconds in case a
+		<code>When</code> turns up, and if none does the caller waits out its own timeout
+		and gets <code>nil</code>. See <a href="requests.html">Requests and Replies</a>.
 	</p>
 </div>
 
@@ -160,21 +189,30 @@ shop:On("Sold", logIt)
 
 <p>
 	A packet that turns up when nothing is listening for it is held rather than thrown
-	away, and replayed to the first handler that registers. Pigeon keeps up to 64 of
-	them per event for 10 seconds. That is a safety net for the small gap during
+	away, and replayed to the first matching handler that registers. Pigeon keeps up to
+	64 of them per event for 10 seconds. That is a safety net for the small gap during
 	startup, not a mailbox. For the real answer see
 	<a href="startup.html">Startup and Buffering</a>.
+</p>
+
+<p>
+	Matching means the same kind, not just the same name. A held fire and forget message
+	only ever replays to an <code>On</code>, and a held request only ever replays to a
+	<code>When</code>. Registering the wrong one leaves the packet sitting where it was
+	until it goes stale.
 </p>
 
 <h3>Off <span class="badge badge--shared">Shared</span></h3>
 
 <div class="api">
-	<pre class="api__sig"><code>carrier:Off(event: string, Callback: (() -> ())?) -> ()</code></pre>
+	<pre class="api__sig"><code>carrier:Off(event: string, Callback: ((...any) -> ...any)?) -> ()</code></pre>
 </div>
 
 <p>
-	Removes handlers. With a callback it removes that one handler. With no callback it
-	removes every handler for the event.
+	Takes handlers off an event. It is the one method that touches both kinds. With a
+	callback it removes that function from the <code>On</code> list, and clears the
+	responder slot too if that same function is the event's <code>When</code>. With no
+	callback it clears every listener and the responder in one go.
 </p>
 
 <div class="table-wrap">
@@ -184,7 +222,7 @@ shop:On("Sold", logIt)
 	</thead>
 	<tbody>
 		<tr><td><code>event</code></td><td><code>string</code></td><td>The event name to unbind.</td></tr>
-		<tr><td><code>Callback</code></td><td><code>(() -> ())?</code></td><td>The one handler to drop. Leave it out to drop them all.</td></tr>
+		<tr><td><code>Callback</code></td><td><code>((...any) -> ...any)?</code></td><td>The one handler to drop, listener or responder. Leave it out to drop them all.</td></tr>
 	</tbody>
 </table>
 </div>
@@ -197,8 +235,8 @@ end
 
 shop:On("Sold", onSold)
 
-shop:Off("Sold", onSold)  -- drops just this handler
-shop:Off("Sold")          -- drops every handler for "Sold"</code></pre>
+shop:Off("Sold", onSold)  -- drops just this listener
+shop:Off("Sold")          -- drops every listener and the responder</code></pre>
 
 <p>
 	To remove one handler you need the same function value you passed in, so keep it in
@@ -207,17 +245,18 @@ shop:Off("Sold")          -- drops every handler for "Sold"</code></pre>
 </p>
 
 <p>
-	Once the last handler for an event is gone, Pigeon unhooks the channel underneath.
-	Calling <code>Off</code> for an event nobody is listening to does nothing.
+	Pigeon unhooks the binding underneath only once both sides are empty. An event with
+	no listeners left but a responder still on it stays bound, and so does the other way
+	round. Calling <code>Off</code> for an event with nothing on it does nothing.
 </p>
 
 <div class="note">
 	<p class="note__title">Note</p>
 	<p>
-		Turning a listener off and back on again quickly can replay what you missed.
-		Messages that arrive while nothing is listening are held for 10 seconds, so a
-		later <code>On</code> for that event receives them. A dropped carrier cannot bind
-		again, so nothing is replayed to it.
+		Turning a listener off and back on again quickly can replay what you missed. Fire
+		and forget messages that arrive while nothing is listening are held for 10
+		seconds, so a later <code>On</code> for that event receives them. A dropped
+		carrier cannot bind again, so nothing is replayed to it.
 	</p>
 </div>
 
@@ -456,7 +495,7 @@ echo:Emit("Values", 1, nil, 6)</code></pre>
 <pre><code>local echo = Pigeon.new("Echo")
 
 echo:On("Values", function(player, a, b, c)
-	print(a, b, c)  --> 1 nil 6
+	print(a, b, c)  --&gt; 1 nil 6
 end)</code></pre>
 </div>
 
@@ -465,7 +504,7 @@ end)</code></pre>
 	one and a list that is nothing but nils all arrive with the same count you sent. It
 	works the same in every direction: <code>Emit</code>, <code>Broadcast</code>,
 	<code>BroadcastTo</code>, <code>BroadcastExcept</code>, <code>SendToRoom</code>,
-	<code>Call</code>, <code>CallTo</code>, and the values a listener
+	<code>Call</code>, <code>CallTo</code>, and the values a responder
 	<a href="requests.html">returns as a reply</a>.
 </p>
 
@@ -489,22 +528,24 @@ end)</code></pre>
 
 <p>
 	Pigeon runs its own protocol over the same channel you do. Those events all start
-	with <code>__pigeon_</code>.
+	with <code>__pigeon_</code>, and they follow the same rule as yours. The three that
+	need an answer are registered with <code>When</code>. The four that do not use
+	<code>On</code>.
 </p>
 
 <div class="table-wrap">
 <table>
 	<thead>
-		<tr><th>Name</th><th>Used for</th></tr>
+		<tr><th>Name</th><th>Registered with</th><th>Used for</th></tr>
 	</thead>
 	<tbody>
-		<tr><td><code>__pigeon_ping</code></td><td><code>Ping</code></td></tr>
-		<tr><td><code>__pigeon_handshake</code></td><td><a href="handshakes.html">Handshakes</a></td></tr>
-		<tr><td><code>__pigeon_table_request</code></td><td rowspan="5"><a href="staged-tables.html">Staged Tables</a></td></tr>
-		<tr><td><code>__pigeon_table_snapshot</code></td></tr>
-		<tr><td><code>__pigeon_table_patch</code></td></tr>
-		<tr><td><code>__pigeon_table_release</code></td></tr>
-		<tr><td><code>__pigeon_table_revoke</code></td></tr>
+		<tr><td><code>__pigeon_ping</code></td><td><code>When</code></td><td><code>Ping</code></td></tr>
+		<tr><td><code>__pigeon_handshake</code></td><td><code>When</code></td><td><a href="handshakes.html">Handshakes</a></td></tr>
+		<tr><td><code>__pigeon_table_request</code></td><td><code>When</code></td><td rowspan="5"><a href="staged-tables.html">Staged Tables</a></td></tr>
+		<tr><td><code>__pigeon_table_snapshot</code></td><td><code>On</code></td></tr>
+		<tr><td><code>__pigeon_table_patch</code></td><td><code>On</code></td></tr>
+		<tr><td><code>__pigeon_table_release</code></td><td><code>On</code></td></tr>
+		<tr><td><code>__pigeon_table_revoke</code></td><td><code>On</code></td></tr>
 	</tbody>
 </table>
 </div>
@@ -526,7 +567,8 @@ end)</code></pre>
 		<tr><th>What you want to do</th><th>Method</th><th>Side</th></tr>
 	</thead>
 	<tbody>
-		<tr><td>Hear an event</td><td><code>On</code></td><td>Both</td></tr>
+		<tr><td>Hear a fire and forget event</td><td><code>On</code></td><td>Both</td></tr>
+		<tr><td>Answer a request</td><td><code>When</code>, see <a href="requests.html">Requests</a></td><td>Both</td></tr>
 		<tr><td>Stop hearing an event</td><td><code>Off</code></td><td>Both</td></tr>
 		<tr><td>Tell the server something</td><td><code>Emit</code></td><td>Client</td></tr>
 		<tr><td>Tell every player something</td><td><code>Broadcast</code></td><td>Server</td></tr>

@@ -93,7 +93,7 @@
 
 local shop = Pigeon.new("Shop")
 
-shop:On("Buy", function(player, itemId)
+shop:When("Buy", function(player, itemId)
 	local ok = giveItem(player, itemId)
 	return ok
 end)
