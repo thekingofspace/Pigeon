@@ -23,12 +23,12 @@ export type CarrierOptions = {
 	Transformer: Transformer?,
 }
 
-export type StageTable = {
-	GetTable: (self: StageTable) -> { [any]: any },
+export type StageTable<t> = {
+	GetTable: (self: StageTable<t>) -> { [any]: any },
 
-	UseCapture: (self: StageTable, Callback: StageGuard) -> (),
-	UseRelease: (self: StageTable, Callback: StageGuard) -> (),
-	Release: (self: StageTable) -> (),
+	UseCapture: (self: StageTable<t>, Callback: StageGuard) -> (),
+	UseRelease: (self: StageTable<t>, Callback: StageGuard) -> (),
+	Release: (self: StageTable<t>) -> (),
 }
 
 export type PigeonCarrier = {
@@ -45,7 +45,7 @@ export type PigeonCarrier = {
 	JoinRoom: (self: PigeonCarrier, RoomID: string, Players: { Player } | Player) -> (),
 	LeaveRoom: (self: PigeonCarrier, RoomID: string, Players: { Player } | Player) -> (),
 
-	CaptureTable: (self: PigeonCarrier, id: string, Table: StageTable) -> (),
+	CaptureTable: (self: PigeonCarrier, id: string, Table: StageTable<any>) -> (),
 	ReleaseTable: (self: PigeonCarrier, id: string) -> (),
 	ForceTable: (self: PigeonCarrier, id: string, Targets: ({ Player } | Player)?) -> (),
 
@@ -55,7 +55,7 @@ export type PigeonCarrier = {
 
 	Emit: (self: PigeonCarrier, event: string, ...any) -> (),
 	Call: (self: PigeonCarrier, event: string, ...any) -> ...any,
-	RequestTable: (self: PigeonCarrier, id: string) -> StageTable,
+	RequestTable: (self: PigeonCarrier, id: string) -> StageTable<any>,
 	Ping: (self: PigeonCarrier) -> number,
 	Handshake: (self: PigeonCarrier, ...any) -> boolean,
 	Init: (self: PigeonCarrier) -> PigeonCarrier,
@@ -75,7 +75,7 @@ export type StagePatch = {
 	value: any,
 }
 
-export type InternalStageTable = StageTable & {
+export type InternalStageTable = StageTable<any> & {
 	_store: { [any]: any },
 	_proxy: { [any]: any },
 	_captureGuards: { StageGuard },

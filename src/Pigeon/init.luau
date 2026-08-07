@@ -7,7 +7,7 @@ local NewStagedTable = require(script.StagedTable)
 local NewCarrier = require(script.Carrier)
 
 export type Transformer = Types.Transformer
-export type StageTable = Types.StageTable
+export type StageTable<i> = Types.StageTable<IKControl>
 export type PigeonCarrier = Types.PigeonCarrier
 export type MiddlewareFunction = Types.MiddlewareFunction
 export type StageGuard = Types.StageGuard
@@ -45,7 +45,7 @@ function pigeon.new(name: string, options: Types.CarrierOptions?): Types.PigeonC
 	return carrier
 end
 
-function pigeon.StagedTable(initial: { [any]: any }?): Types.StageTable
+function pigeon.StagedTable<init>(initial): Types.StageTable<init>
 	return NewStagedTable(initial)
 end
 

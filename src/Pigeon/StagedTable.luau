@@ -151,6 +151,44 @@ local function empty()
 	return nil
 end
 
+local function renderValue(value: any, indent: string): string
+	if type(value) ~= "table" then
+		if type(value) == "string" then
+			return string.format("%q", value)
+		end
+		return tostring(value)
+	end
+
+	local inner = indent .. "    "
+	local parts: { string } = {}
+
+	local count = #value
+	for index = 1, count do
+		table.insert(parts, inner .. "[" .. index .. "] = " .. renderValue(value[index], inner))
+	end
+
+	local rest: { any } = {}
+	for key in value do
+		if type(key) == "number" and key % 1 == 0 and key >= 1 and key <= count then
+			continue
+		end
+		table.insert(rest, key)
+	end
+	table.sort(rest, function(a: any, b: any): boolean
+		return tostring(a) < tostring(b)
+	end)
+
+	for _, key in rest do
+		local label = if type(key) == "string" then string.format("[%q]", key) else "[" .. tostring(key) .. "]"
+		table.insert(parts, inner .. label .. " = " .. renderValue(value[key], inner))
+	end
+
+	if #parts == 0 then
+		return "{}"
+	end
+	return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "}"
+end
+
 local function wrap(resolve: () -> any, onWrite: (path: { any }, value: any) -> (), prefix: { any }): { [any]: any }
 	local children: { [any]: any } = setmetatable({}, { __mode = "v" }) :: any
 
@@ -210,7 +248,27 @@ local function wrap(resolve: () -> any, onWrite: (path: { any }, value: any) -> 
 		if type(store) ~= "table" then
 			return empty
 		end
-		return next, store
+
+		local function step(_, key: any): (any, any)
+			local nextKey, rawValue = next(store, key)
+			if nextKey == nil then
+				return nil, nil
+			end
+			if type(rawValue) == "table" then
+				return nextKey, (proxy :: any)[nextKey]
+			end
+			return nextKey, rawValue
+		end
+
+		return step, store
+	end
+
+	meta.__tostring = function(): string
+		local store = resolve()
+		if type(store) ~= "table" then
+			return "{}"
+		end
+		return renderValue(store, "")
 	end
 
 	return proxy :: any
@@ -280,7 +338,7 @@ function StagedTable.Snapshot(self: types.InternalStageTable): any
 	return encode(self._store)
 end
 
-return function(initial: { [any]: any }?): types.StageTable
+return function(initial: { [any]: any }?): types.StageTable<any>
 	local self: types.InternalStageTable = setmetatable({
 		_store = rawCopy(initial or {}),
 		_captureGuards = {},

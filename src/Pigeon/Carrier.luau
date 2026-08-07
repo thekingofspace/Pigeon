@@ -627,7 +627,7 @@ function Carrier.Ping(self: types.InternalCarrier): number
 	return os.clock() - started
 end
 
-function Carrier.CaptureTable(self: types.InternalCarrier, id: string, Table: types.StageTable)
+function Carrier.CaptureTable(self: types.InternalCarrier, id: string, Table: types.StageTable<any>)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -695,7 +695,7 @@ function Carrier.ForceTable(self: types.InternalCarrier, id: string, Targets: ({
 	Carrier.BroadcastTo(self, targets, EV_TABLE_SNAPSHOT, id, staged:Snapshot())
 end
 
-local function adoptTable(self: types.InternalCarrier, id: string, snapshot: any): types.StageTable
+local function adoptTable(self: types.InternalCarrier, id: string, snapshot: any): types.StageTable<any>
 	local existing = self._tables[id]
 	if existing then
 		existing:ApplySnapshot(snapshot)
@@ -715,7 +715,7 @@ local function adoptTable(self: types.InternalCarrier, id: string, snapshot: any
 	return staged
 end
 
-function Carrier.RequestTable(self: types.InternalCarrier, id: string): types.StageTable
+function Carrier.RequestTable(self: types.InternalCarrier, id: string): types.StageTable<any>
 	if IS_SERVER then
 		error(ERRORS.NOT_CLIENT, 2)
 	end
