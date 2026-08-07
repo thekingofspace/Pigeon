@@ -1,3 +1,5 @@
+--!strict
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -23,15 +25,7 @@ local ERRORS = {
 local HELD_TTL = 10
 local HELD_MAX = 64
 
-type Packet = {
-	at: number,
-	event: string,
-	args: { any },
-	count: number,
-	player: Player?,
-	bucket: number,
-	promiseId: number?,
-}
+type Packet = types.CarrierPacket
 
 local EV_PING = "__pigeon_ping"
 local EV_HANDSHAKE = "__pigeon_handshake"
@@ -44,11 +38,11 @@ local EV_TABLE_REVOKE = "__pigeon_table_revoke"
 local Carrier = {}
 Carrier.__index = Carrier
 
-local function wire(self: any, event: string): string
+local function wire(self: types.InternalCarrier, event: string): string
 	return self._name .. "\0" .. event
 end
 
-local function unwire(self: any, event: string): string
+local function unwire(self: types.InternalCarrier, event: string): string
 	local prefix = self._name .. "\0"
 	if string.sub(event, 1, #prefix) == prefix then
 		return string.sub(event, #prefix + 1)
@@ -86,7 +80,7 @@ local function toList(value: { Player } | Player): { Player }
 	return value :: { Player }
 end
 
-local function alive(self: any): boolean
+local function alive(self: types.InternalCarrier): boolean
 	return not self._dropped and not self._transformer.destroyed
 end
 
@@ -98,7 +92,7 @@ local function notify(callback: (...any) -> (), packet: Packet)
 	end
 end
 
-local function answer(self: any, responder: (...any) -> ...any, packet: Packet)
+local function answer(self: types.InternalCarrier, responder: (...any) -> ...any, packet: Packet)
 	local player = packet.player
 
 	local results = table.pack(pcall(function()
@@ -119,7 +113,7 @@ local function answer(self: any, responder: (...any) -> ...any, packet: Packet)
 	end
 end
 
-local function serve(self: any, packet: Packet)
+local function serve(self: types.InternalCarrier, packet: Packet)
 	if packet.promiseId then
 		local responder = self._responder[packet.event]
 		if responder then
@@ -137,7 +131,7 @@ local function serve(self: any, packet: Packet)
 	end
 end
 
-local function handled(self: any, event: string, isRequest: boolean): boolean
+local function handled(self: types.InternalCarrier, event: string, isRequest: boolean): boolean
 	if isRequest then
 		return self._responder[event] ~= nil
 	end
@@ -145,7 +139,7 @@ local function handled(self: any, event: string, isRequest: boolean): boolean
 	return listeners ~= nil and #listeners > 0
 end
 
-local function unbindIfIdle(self: any, event: string)
+local function unbindIfIdle(self: types.InternalCarrier, event: string)
 	if handled(self, event, true) or handled(self, event, false) then
 		return
 	end
@@ -156,7 +150,7 @@ local function unbindIfIdle(self: any, event: string)
 	end
 end
 
-local function replay(self: any, event: string, isRequest: boolean, handler: (...any) -> ...any)
+local function replay(self: types.InternalCarrier, event: string, isRequest: boolean, handler: (...any) -> ...any)
 	local queue = self._held[event]
 	if not queue then
 		return
@@ -180,10 +174,14 @@ local function replay(self: any, event: string, isRequest: boolean, handler: (..
 		end
 	end
 
-	self._held[event] = if #kept > 0 then kept else nil
+	if #kept > 0 then
+		self._held[event] = kept
+	else
+		self._held[event] = nil
+	end
 end
 
-local function keep(self: any, packet: Packet)
+local function keep(self: types.InternalCarrier, packet: Packet)
 	local queue = self._held[packet.event]
 	if not queue then
 		queue = {}
@@ -203,7 +201,7 @@ local function keep(self: any, packet: Packet)
 	table.insert(queue, packet)
 end
 
-local function route(self: any, event: string, ...: any)
+local function route(self: types.InternalCarrier, event: string, ...: any)
 	if self._dropped then
 		return
 	end
@@ -253,7 +251,7 @@ local function route(self: any, event: string, ...: any)
 	keep(self, packet)
 end
 
-local function bind(self: any, event: string)
+local function bind(self: types.InternalCarrier, event: string)
 	if self._bound[event] or self._transformer.destroyed then
 		return
 	end
@@ -269,7 +267,7 @@ local function bind(self: any, event: string)
 	end
 end
 
-local function prepare(self: any, event: string, player: Player?, ...: any): (string, { any })
+local function prepare(self: types.InternalCarrier, event: string, player: Player?, ...: any): (string, { any })
 	local args = table.pack(...)
 	local plain = table.move(args, 1, args.n, 1, {})
 
@@ -279,7 +277,7 @@ local function prepare(self: any, event: string, player: Player?, ...: any): (st
 	return resolved, { args = plain, n = math.max(#plain, args.n) }
 end
 
-function Carrier.On(self: any, event: string, Callback: (...any) -> ())
+function Carrier.On(self: types.InternalCarrier, event: string, Callback: (...any) -> ())
 	if self._dropped then
 		return
 	end
@@ -293,7 +291,7 @@ function Carrier.On(self: any, event: string, Callback: (...any) -> ())
 	replay(self, event, false, Callback)
 end
 
-function Carrier.When(self: any, event: string, Callback: ((...any) -> ...any)?)
+function Carrier.When(self: types.InternalCarrier, event: string, Callback: ((...any) -> ...any)?)
 	if self._dropped then
 		return
 	end
@@ -310,7 +308,7 @@ function Carrier.When(self: any, event: string, Callback: ((...any) -> ...any)?)
 	replay(self, event, true, Callback)
 end
 
-function Carrier.Off(self: any, event: string, Callback: ((...any) -> ...any)?)
+function Carrier.Off(self: types.InternalCarrier, event: string, Callback: ((...any) -> ...any)?)
 	if Callback then
 		local callbacks = self._listeners[event]
 		if callbacks then
@@ -333,7 +331,7 @@ function Carrier.Off(self: any, event: string, Callback: ((...any) -> ...any)?)
 	unbindIfIdle(self, event)
 end
 
-function Carrier.UseHandshake(self: any, Callback: (Player, ...any) -> boolean)
+function Carrier.UseHandshake(self: types.InternalCarrier, Callback: (Player, ...any) -> boolean)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -343,7 +341,7 @@ function Carrier.UseHandshake(self: any, Callback: (Player, ...any) -> boolean)
 	bind(self, EV_HANDSHAKE)
 end
 
-function Carrier.Init(self: any): any
+function Carrier.Init(self: types.InternalCarrier): any
 	if IS_SERVER or self._inited or not alive(self) then
 		return self
 	end
@@ -354,7 +352,7 @@ function Carrier.Init(self: any): any
 	return self
 end
 
-function Carrier.Handshake(self: any, ...: any): boolean
+function Carrier.Handshake(self: types.InternalCarrier, ...: any): boolean
 	if IS_SERVER then
 		error(ERRORS.NOT_CLIENT, 2)
 	end
@@ -367,7 +365,7 @@ function Carrier.Handshake(self: any, ...: any): boolean
 	return self._handshaken
 end
 
-local function evict(self: any, player: Player): boolean
+local function evict(self: types.InternalCarrier, player: Player): boolean
 	local admitted = self._authed[player] == true
 	self._authed[player] = nil
 
@@ -394,7 +392,7 @@ local function evict(self: any, player: Player): boolean
 	return admitted
 end
 
-function Carrier.Revoke(self: any, Targets: { Player } | Player): number
+function Carrier.Revoke(self: types.InternalCarrier, Targets: { Player } | Player): number
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -411,7 +409,7 @@ function Carrier.Revoke(self: any, Targets: { Player } | Player): number
 	return revoked
 end
 
-function Carrier.Approved(self: any, Targets: { Player }?): { Player }
+function Carrier.Approved(self: types.InternalCarrier, Targets: { Player }?): { Player }
 	local candidates = Targets or Players:GetPlayers()
 	if not self._handshake then
 		return candidates
@@ -426,15 +424,15 @@ function Carrier.Approved(self: any, Targets: { Player }?): { Player }
 	return out
 end
 
-function Carrier.UseIncoming(self: any, Callback: types.MiddlewareFunction)
+function Carrier.UseIncoming(self: types.InternalCarrier, Callback: types.MiddlewareFunction)
 	table.insert(self._incoming, Callback)
 end
 
-function Carrier.UseOutgoing(self: any, Callback: types.MiddlewareFunction)
+function Carrier.UseOutgoing(self: types.InternalCarrier, Callback: types.MiddlewareFunction)
 	table.insert(self._outgoing, Callback)
 end
 
-function Carrier.Emit(self: any, event: string, ...: any)
+function Carrier.Emit(self: types.InternalCarrier, event: string, ...: any)
 	if IS_SERVER then
 		error(ERRORS.NOT_CLIENT, 2)
 	end
@@ -445,7 +443,7 @@ function Carrier.Emit(self: any, event: string, ...: any)
 	Network.Push(self._transformer, wire(self, resolved), packed, self.Unreliable)
 end
 
-function Carrier.BroadcastTo(self: any, Targets: { Player }, event: string, ...: any)
+function Carrier.BroadcastTo(self: types.InternalCarrier, Targets: { Player } | Player, event: string, ...: any)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -453,7 +451,7 @@ function Carrier.BroadcastTo(self: any, Targets: { Player }, event: string, ...:
 		return
 	end
 
-	local allowed = Carrier.Approved(self, Targets)
+	local allowed = Carrier.Approved(self, toList(Targets))
 	if #allowed == 0 then
 		return
 	end
@@ -462,14 +460,14 @@ function Carrier.BroadcastTo(self: any, Targets: { Player }, event: string, ...:
 	Network.Broadcast(allowed, self._transformer, wire(self, resolved), packed, self.Unreliable)
 end
 
-function Carrier.Broadcast(self: any, event: string, ...: any)
+function Carrier.Broadcast(self: types.InternalCarrier, event: string, ...: any)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
 	Carrier.BroadcastTo(self, Players:GetPlayers(), event, ...)
 end
 
-function Carrier.BroadcastExcept(self: any, Skip: { Player }, event: string, ...: any)
+function Carrier.BroadcastExcept(self: types.InternalCarrier, Skip: { Player } | Player, event: string, ...: any)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -484,7 +482,7 @@ function Carrier.BroadcastExcept(self: any, Skip: { Player }, event: string, ...
 	Carrier.BroadcastTo(self, targets, event, ...)
 end
 
-function Carrier.Call(self: any, event: string, ...: any): ...any
+function Carrier.Call(self: types.InternalCarrier, event: string, ...: any): ...any
 	if IS_SERVER then
 		error(ERRORS.NOT_CLIENT, 2)
 	end
@@ -503,7 +501,7 @@ function Carrier.Call(self: any, event: string, ...: any): ...any
 	return table.unpack(response.args, 1, response.n or 0)
 end
 
-function Carrier.CallTo(self: any, Target: Player, Event: string, ...: any): ...any
+function Carrier.CallTo(self: types.InternalCarrier, Target: Player, Event: string, ...: any): ...any
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -531,7 +529,7 @@ function Carrier.CallTo(self: any, Target: Player, Event: string, ...: any): ...
 	return table.unpack(response.args, 1, response.n or 0)
 end
 
-local function firstUnapproved(self: any, members: { Player }): Player?
+local function firstUnapproved(self: types.InternalCarrier, members: { Player }): Player?
 	if not self._handshake then
 		return nil
 	end
@@ -543,12 +541,12 @@ local function firstUnapproved(self: any, members: { Player }): Player?
 	return nil
 end
 
-function Carrier.CreateRoom(self: any, RoomID: string, Members: { Player })
+function Carrier.CreateRoom(self: types.InternalCarrier, RoomID: string, Members: { Player })
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
 
-	local members = Members or {}
+	local members: { Player } = Members or {}
 	local blocked = firstUnapproved(self, members)
 	if blocked then
 		error(string.format(ERRORS.NOT_APPROVED, tostring(blocked), RoomID), 2)
@@ -560,14 +558,14 @@ function Carrier.CreateRoom(self: any, RoomID: string, Members: { Player })
 	end
 end
 
-function Carrier.DestroyRoom(self: any, RoomID: string)
+function Carrier.DestroyRoom(self: types.InternalCarrier, RoomID: string)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
 	self._rooms[RoomID] = nil
 end
 
-function Carrier.JoinRoom(self: any, RoomID: string, Members: { Player } | Player)
+function Carrier.JoinRoom(self: types.InternalCarrier, RoomID: string, Members: { Player } | Player)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -590,7 +588,7 @@ function Carrier.JoinRoom(self: any, RoomID: string, Members: { Player } | Playe
 	end
 end
 
-function Carrier.LeaveRoom(self: any, RoomID: string, Members: { Player } | Player)
+function Carrier.LeaveRoom(self: types.InternalCarrier, RoomID: string, Members: { Player } | Player)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -607,7 +605,7 @@ function Carrier.LeaveRoom(self: any, RoomID: string, Members: { Player } | Play
 	end
 end
 
-function Carrier.SendToRoom(self: any, Room: string, event: string, ...: any)
+function Carrier.SendToRoom(self: types.InternalCarrier, Room: string, event: string, ...: any)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -620,7 +618,7 @@ function Carrier.SendToRoom(self: any, Room: string, event: string, ...: any)
 	Carrier.BroadcastTo(self, room, event, ...)
 end
 
-function Carrier.Ping(self: any): number
+function Carrier.Ping(self: types.InternalCarrier): number
 	if IS_SERVER then
 		error(ERRORS.NOT_CLIENT, 2)
 	end
@@ -629,7 +627,7 @@ function Carrier.Ping(self: any): number
 	return os.clock() - started
 end
 
-function Carrier.CaptureTable(self: any, id: string, Table: types.StageTable)
+function Carrier.CaptureTable(self: types.InternalCarrier, id: string, Table: types.StageTable)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
@@ -669,32 +667,35 @@ function Carrier.CaptureTable(self: any, id: string, Table: types.StageTable)
 	end
 end
 
-function Carrier.ReleaseTable(self: any, id: string)
+function Carrier.ReleaseTable(self: types.InternalCarrier, id: string)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
 	self._tables[id] = nil
 end
 
-function Carrier.ForceTable(self: any, id: string, Table: types.StageTable, Targets: ({ Player } | Player)?)
+function Carrier.ForceTable(self: types.InternalCarrier, id: string, Targets: ({ Player } | Player)?)
 	if not IS_SERVER then
 		error(ERRORS.NOT_SERVER, 2)
 	end
 
-	if self._tables[id] ~= Table then
-		Carrier.CaptureTable(self, id, Table)
+	local staged = self._tables[id]
+	if not staged then
+		error(string.format(ERRORS.NO_TABLE, id), 2)
 	end
 
-	local staged = Table :: any
+	local subscribers = staged._subscribers or {}
+	staged._subscribers = subscribers
+
 	local targets = if Targets then toList(Targets) else Players:GetPlayers()
 	for _, player in targets do
-		staged._subscribers[player] = true
+		subscribers[player] = true
 	end
 
 	Carrier.BroadcastTo(self, targets, EV_TABLE_SNAPSHOT, id, staged:Snapshot())
 end
 
-local function adoptTable(self: any, id: string, snapshot: any): types.StageTable
+local function adoptTable(self: types.InternalCarrier, id: string, snapshot: any): types.StageTable
 	local existing = self._tables[id]
 	if existing then
 		existing:ApplySnapshot(snapshot)
@@ -714,7 +715,7 @@ local function adoptTable(self: any, id: string, snapshot: any): types.StageTabl
 	return staged
 end
 
-function Carrier.RequestTable(self: any, id: string): types.StageTable
+function Carrier.RequestTable(self: types.InternalCarrier, id: string): types.StageTable
 	if IS_SERVER then
 		error(ERRORS.NOT_CLIENT, 2)
 	end
@@ -732,7 +733,7 @@ function Carrier.RequestTable(self: any, id: string): types.StageTable
 	return adoptTable(self, id, snapshot)
 end
 
-function Carrier.Destroy(self: any)
+function Carrier.Destroy(self: types.InternalCarrier)
 	if self._dropped then
 		return
 	end
@@ -790,7 +791,7 @@ function Carrier.Destroy(self: any)
 	end
 end
 
-local function installProtocol(self: any)
+local function installProtocol(self: types.InternalCarrier)
 	if self._dropped then
 		return
 	end
@@ -834,8 +835,9 @@ local function installProtocol(self: any)
 				return false, nil
 			end
 
-			staged._subscribers = staged._subscribers or {}
-			staged._subscribers[player] = true
+			local subscribers = staged._subscribers or {}
+			staged._subscribers = subscribers
+			subscribers[player] = true
 			return true, staged:Snapshot()
 		end)
 
@@ -893,44 +895,45 @@ local function installProtocol(self: any)
 	end
 end
 
-return function(
-	name: string,
-	options: { Unreliable: boolean?, Timeout: number?, Transformer: types.Transformer? }?
-): types.PigeonCarrier
+return function(name: string, options: types.CarrierOptions?): types.PigeonCarrier
 	if type(name) ~= "string" or name == "" then
 		error(ERRORS.NO_NAME, 2)
 	end
 
-	local self = setmetatable({}, Carrier) :: any
+	local opts: types.CarrierOptions = options or {}
 
-	local opts = options or {}
-	self.Unreliable = opts.Unreliable == true
-	self.Timeout = opts.Timeout
-
-	local transformer = opts.Transformer
-	if transformer == nil then
+	local supplied = opts.Transformer
+	local transformer: types.Transformer
+	if supplied == nil then
 		transformer = NewTransformer(name)
-	elseif typeof(transformer) ~= "table" or type((transformer :: any).uuid) ~= "string" then
+	elseif typeof(supplied) ~= "table" or type((supplied :: any).uuid) ~= "string" then
 		error(ERRORS.NO_TRANSFORMER, 2)
+	else
+		transformer = supplied
 	end
 
-	self._transformer = transformer
-	self._name = name
-	self._ownsTransformer = opts.Transformer == nil
-	self._listeners = {}
-	self._responder = {}
-	self._bound = {}
-	self._held = {}
-	self._incoming = {}
-	self._outgoing = {}
-	self._rooms = {}
-	self._tables = {}
-	self._connections = {}
-	self._dropped = false
-	self._inited = false
-	self._handshake = nil
-	self._handshaken = false
-	self._authed = {}
+	local self: types.InternalCarrier = setmetatable({
+		Unreliable = opts.Unreliable == true,
+		Timeout = opts.Timeout,
+
+		_transformer = transformer,
+		_name = name,
+		_ownsTransformer = opts.Transformer == nil,
+		_listeners = {},
+		_responder = {},
+		_bound = {},
+		_held = {},
+		_incoming = {},
+		_outgoing = {},
+		_rooms = {},
+		_tables = {},
+		_connections = {},
+		_dropped = false,
+		_inited = false,
+		_handshake = nil,
+		_handshaken = false,
+		_authed = {},
+	}, Carrier) :: any
 
 	transformer:Track(function()
 		Carrier.Destroy(self)

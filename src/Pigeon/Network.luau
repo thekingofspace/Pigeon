@@ -1,3 +1,5 @@
+--!strict
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
@@ -49,7 +51,7 @@ local unreliableRefs: { [number]: UnreliableRemoteEvent } = {}
 
 local listeners: { [string]: { (...any) -> () } } = {}
 
-type Orphan = { at: number, bucket: number, args: { n: number, [number]: any } }
+type Orphan = { at: number, args: { n: number, [number]: any } }
 
 local orphaned: { [string]: { Orphan } } = {}
 
@@ -61,8 +63,10 @@ type Pending = {
 
 local pending: { [number]: Pending } = {}
 
+type Buffered = { at: number, bucket: number, args: { n: number, [number]: any } }
+
 local ready: { [string]: { [Player]: boolean } } = {}
-local buffered: { [string]: { [Player]: { Orphan } } } = {}
+local buffered: { [string]: { [Player]: { Buffered } } } = {}
 
 local watchers: { [string]: { (event: string, ...any) -> () } } = {}
 
@@ -264,26 +268,30 @@ local function createRef(bucket: number): RemoteEvent
 	local folder = getRefFolder()
 
 	local name = REF_PREFIX .. bucket
-	local event = folder:FindFirstChild(name)
-	if not event then
-		event = Instance.new("RemoteEvent")
-		event.Name = name
-		event.Parent = folder
+	local found = folder:FindFirstChild(name)
+	local remote: RemoteEvent
+	if found then
+		remote = found :: RemoteEvent
+	else
+		remote = Instance.new("RemoteEvent")
+		remote.Name = name
+		remote.Parent = folder
 	end
-	local remote = event :: RemoteEvent
 	refs[bucket] = remote
 	remote.OnServerEvent:Connect(function(player: Player, ...: any)
 		onServerPacket(bucket, player, ...)
 	end)
 
 	local uname = REF_PREFIX_UNRELIABLE .. bucket
-	local uevent = folder:FindFirstChild(uname)
-	if not uevent then
-		uevent = Instance.new("UnreliableRemoteEvent")
-		uevent.Name = uname
-		uevent.Parent = folder
+	local ufound = folder:FindFirstChild(uname)
+	local uremote: UnreliableRemoteEvent
+	if ufound then
+		uremote = ufound :: UnreliableRemoteEvent
+	else
+		uremote = Instance.new("UnreliableRemoteEvent")
+		uremote.Name = uname
+		uremote.Parent = folder
 	end
-	local uremote = uevent :: UnreliableRemoteEvent
 	unreliableRefs[bucket] = uremote
 	uremote.OnServerEvent:Connect(function(player: Player, ...: any)
 		onServerPacket(bucket, player, ...)
@@ -432,7 +440,7 @@ flushOutbox = function()
 	local held = outbox
 	outbox = {}
 
-	local ordered = table.create(#held)
+	local ordered = (table.create(#held) :: any) :: { Outbound }
 	for _, packet in held do
 		if packet.auth then
 			table.insert(ordered, packet)
@@ -726,7 +734,7 @@ function module.BroadcastCall(
 
 	local deadline = os.clock() + (timeout or DEFAULT_TIMEOUT)
 	local remaining = #players
-	local ids: { [Player]: string } = {}
+	local ids: { [Player]: number } = {}
 	local finished = false
 	local leaveConn: RBXScriptConnection
 
@@ -803,12 +811,12 @@ else
 	task.spawn(function()
 		local folder = getRefFolder()
 		local function consider(child: Instance)
-			local bucket = tonumber(child.Name:match("^" .. REF_PREFIX .. "(%d+)$"))
+			local bucket = tonumber((child.Name:match("^" .. REF_PREFIX .. "(%d+)$")))
 			if bucket and child:IsA("RemoteEvent") then
 				bindClientRef(bucket, child)
 				return
 			end
-			local ubucket = tonumber(child.Name:match("^" .. REF_PREFIX_UNRELIABLE .. "(%d+)$"))
+			local ubucket = tonumber((child.Name:match("^" .. REF_PREFIX_UNRELIABLE .. "(%d+)$")))
 			if ubucket and child:IsA("UnreliableRemoteEvent") then
 				resolveUnreliable(ubucket)
 				flushOutbox()

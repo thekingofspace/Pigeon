@@ -1,3 +1,5 @@
+--!strict
+
 local Types = require(script.Types)
 local Network = require(script.Network)
 local NewTransformer = require(script.Transformer)
@@ -15,22 +17,19 @@ local pigeon = {}
 pigeon.Network = Network
 pigeon.Types = Types
 
-local carriers: { [string]: Types.PigeonCarrier } = {}
+local carriers: { [string]: Types.InternalCarrier } = {}
 
-function pigeon.new(
-	name: string,
-	options: { Unreliable: boolean?, Timeout: number?, Transformer: Types.Transformer? }?
-): Types.PigeonCarrier
+function pigeon.new(name: string, options: Types.CarrierOptions?): Types.PigeonCarrier
 	if options ~= nil then
 		return NewCarrier(name, options)
 	end
 
-	local existing = carriers[name] :: any
+	local existing = carriers[name]
 	if existing and not existing._dropped and not existing._transformer.destroyed then
 		return existing
 	end
 
-	local carrier = NewCarrier(name) :: any
+	local carrier = (NewCarrier(name) :: any) :: Types.InternalCarrier
 
 	if carrier._dropped then
 		return carrier

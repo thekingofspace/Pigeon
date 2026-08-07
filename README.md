@@ -43,14 +43,15 @@ shop:Init()
 print(shop:Call("Buy", "sword"))
 ```
 
-No RemoteEvent was made, named, found or waited for. The string `"Shop"` is the
-only thing the two sides agree on.
+Pigeon still runs on RemoteEvents underneath — it makes and manages them for
+you, out of a shared pool. You never name one, find one or wait for one. The
+string `"Shop"` is the only thing the two sides agree on.
 
 ## What you get
 
 | | |
 | --- | --- |
-| **Names, not Instances** | You never make a RemoteEvent. You name a channel. |
+| **Names, not Instances** | You name a channel. Pigeon creates and wires the RemoteEvent behind it. |
 | **A shared pool of remotes** | Hundreds of channels share at most 32 slots, 64 remotes counting the unreliable twins. |
 | **No startup race** | Messages sent before a client is ready are held for it and arrive in order. |
 | **Channels you can lock** | Put a guard on a channel and only players who pass it can send or receive. |

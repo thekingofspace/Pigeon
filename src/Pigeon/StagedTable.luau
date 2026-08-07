@@ -1,3 +1,5 @@
+--!strict
+
 local types = require("./Types")
 
 local StagedTable = {}
@@ -52,7 +54,7 @@ local function describePath(path: { any }): string
 	if #path == 0 then
 		return "root"
 	end
-	local parts = table.create(#path)
+	local parts = (table.create(#path) :: any) :: { string }
 	for _, key in path do
 		table.insert(parts, tostring(key))
 	end
@@ -149,7 +151,7 @@ local function empty()
 	return nil
 end
 
-local function wrap(resolve: () -> any, onWrite: ({ any }, any) -> (), prefix: { any }): { [any]: any }
+local function wrap(resolve: () -> any, onWrite: (path: { any }, value: any) -> (), prefix: { any }): { [any]: any }
 	local children: { [any]: any } = setmetatable({}, { __mode = "v" }) :: any
 
 	local function pathTo(key: any): { any }
@@ -203,7 +205,7 @@ local function wrap(resolve: () -> any, onWrite: ({ any }, any) -> (), prefix: {
 		return if type(store) == "table" then #store else 0
 	end
 
-	meta.__iter = function()
+	meta.__iter = function(): ...any
 		local store = resolve()
 		if type(store) ~= "table" then
 			return empty
@@ -214,19 +216,19 @@ local function wrap(resolve: () -> any, onWrite: ({ any }, any) -> (), prefix: {
 	return proxy :: any
 end
 
-function StagedTable.GetTable(self: types.StageTable): { [any]: any }
+function StagedTable.GetTable(self: types.InternalStageTable): { [any]: any }
 	return self._proxy
 end
 
-function StagedTable.UseCapture(self: types.StageTable, Callback: types.StageGuard)
+function StagedTable.UseCapture(self: types.InternalStageTable, Callback: types.StageGuard)
 	table.insert(self._captureGuards, Callback)
 end
 
-function StagedTable.UseRelease(self: types.StageTable, Callback: types.StageGuard)
+function StagedTable.UseRelease(self: types.InternalStageTable, Callback: types.StageGuard)
 	table.insert(self._releaseGuards, Callback)
 end
 
-function StagedTable.CanCapture(self: types.StageTable, player: Player): boolean
+function StagedTable.CanCapture(self: types.InternalStageTable, player: Player): boolean
 	for _, guard in self._captureGuards do
 		local ok, allowed = pcall(guard, player, self._id)
 		if not ok or allowed == false then
@@ -236,7 +238,7 @@ function StagedTable.CanCapture(self: types.StageTable, player: Player): boolean
 	return true
 end
 
-function StagedTable.CanRelease(self: types.StageTable, player: Player): boolean
+function StagedTable.CanRelease(self: types.InternalStageTable, player: Player): boolean
 	for _, guard in self._releaseGuards do
 		local ok, allowed = pcall(guard, player, self._id)
 		if not ok or allowed == false then
@@ -246,52 +248,58 @@ function StagedTable.CanRelease(self: types.StageTable, player: Player): boolean
 	return true
 end
 
-function StagedTable.Release(self: types.StageTable)
+function StagedTable.Release(self: types.InternalStageTable)
 	if self._released then
 		return
 	end
 	self._released = true
-	if self._onRelease then
-		self._onRelease(self)
+
+	local onRelease = self._onRelease
+	if onRelease then
+		onRelease(self)
 	end
 end
 
-function StagedTable.ApplyPatches(self: types.StageTable, patches: { { path: { any }, value: any } })
+function StagedTable.ApplyPatches(self: types.InternalStageTable, patches: { types.StagePatch })
 	for _, patch in patches do
 		local container, key = descend(self._store, patch.path)
 		container[key] = decode(patch.value)
 	end
 end
 
-function StagedTable.ApplySnapshot(self: types.StageTable, snapshot: any)
+function StagedTable.ApplySnapshot(self: types.InternalStageTable, snapshot: any)
+	local decoded: { [any]: any } = decode(snapshot)
+
 	table.clear(self._store)
-	for key, value in decode(snapshot) do
+	for key, value in decoded do
 		self._store[key] = value
 	end
 end
 
-function StagedTable.Snapshot(self: types.StageTable): any
+function StagedTable.Snapshot(self: types.InternalStageTable): any
 	return encode(self._store)
 end
 
 return function(initial: { [any]: any }?): types.StageTable
-	local self = setmetatable({}, StagedTable) :: any
-
-	self._store = rawCopy(initial or {})
-	self._captureGuards = {}
-	self._releaseGuards = {}
-	self._released = false
-	self._id = nil
-	self._onRelease = nil
-	self._onWrite = nil
-	self._queued = {}
-	self._flushing = false
+	local self: types.InternalStageTable = setmetatable({
+		_store = rawCopy(initial or {}),
+		_captureGuards = {},
+		_releaseGuards = {},
+		_released = false,
+		_id = "",
+		_onRelease = nil,
+		_onWrite = nil,
+		_queued = {},
+		_flushing = false,
+		_proxy = nil,
+	}, StagedTable) :: any
 
 	self._proxy = wrap(function()
 		return self._store
 	end, function(path: { any }, value: any)
-		if self._onWrite then
-			self._onWrite(path, value)
+		local onWrite = self._onWrite
+		if onWrite then
+			onWrite(path, value)
 		end
 	end, {})
 

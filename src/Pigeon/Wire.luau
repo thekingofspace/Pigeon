@@ -1,3 +1,5 @@
+--!strict
+
 local Wire = {}
 
 Wire.PUSH = 0
@@ -23,7 +25,7 @@ function Wire.pack(
 	if total > 255 then
 		error("ERR_TOO_MANY_ARGUMENTS | A single message carries at most 255 arguments.", 0)
 	end
-	local values = table.create(total)
+	local values: { any } = table.create(total)
 
 	local flags = bit32.band(kind, 0b11)
 	if promiseId then
@@ -118,7 +120,7 @@ function Wire.unpack(meta: buffer, values: { any }?): (number, string, number?, 
 
 	local event = if eventLen > 0 then buffer.readstring(meta, at, eventLen) else ""
 
-	local args = table.create(count)
+	local args: { any } = table.create(count)
 	for index = 1, count do
 		local byte = base + math.floor((index - 1) / 8)
 		local bit = (index - 1) % 8
