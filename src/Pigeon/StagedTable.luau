@@ -274,6 +274,18 @@ local function wrap(resolve: () -> any, onWrite: (path: { any }, value: any) -> 
 	return proxy :: any
 end
 
+local function notifyUpdate(self: types.InternalStageTable)
+	local listeners = self._updateListeners
+	if #listeners == 0 then
+		return
+	end
+
+	local view = self._proxy
+	for _, callback in table.clone(listeners) do
+		task.spawn(callback, view)
+	end
+end
+
 function StagedTable.GetTable(self: types.InternalStageTable): { [any]: any }
 	return self._proxy
 end
@@ -284,6 +296,17 @@ end
 
 function StagedTable.UseRelease(self: types.InternalStageTable, Callback: types.StageGuard)
 	table.insert(self._releaseGuards, Callback)
+end
+
+function StagedTable.OnUpdate(self: types.InternalStageTable, Callback: types.StageUpdate): () -> ()
+	table.insert(self._updateListeners, Callback)
+
+	return function()
+		local index = table.find(self._updateListeners, Callback)
+		if index then
+			table.remove(self._updateListeners, index)
+		end
+	end
 end
 
 function StagedTable.CanCapture(self: types.InternalStageTable, player: Player): boolean
@@ -323,6 +346,8 @@ function StagedTable.ApplyPatches(self: types.InternalStageTable, patches: { typ
 		local container, key = descend(self._store, patch.path)
 		container[key] = decode(patch.value)
 	end
+
+	notifyUpdate(self)
 end
 
 function StagedTable.ApplySnapshot(self: types.InternalStageTable, snapshot: any)
@@ -332,6 +357,8 @@ function StagedTable.ApplySnapshot(self: types.InternalStageTable, snapshot: any
 	for key, value in decoded do
 		self._store[key] = value
 	end
+
+	notifyUpdate(self)
 end
 
 function StagedTable.Snapshot(self: types.InternalStageTable): any
@@ -343,6 +370,7 @@ return function(initial: { [any]: any }?): types.StageTable<any>
 		_store = rawCopy(initial or {}),
 		_captureGuards = {},
 		_releaseGuards = {},
+		_updateListeners = {},
 		_released = false,
 		_id = "",
 		_onRelease = nil,

@@ -17,6 +17,8 @@ export type MiddlewareFunction = (
 
 export type StageGuard = (player: Player, id: string) -> boolean?
 
+export type StageUpdate = (view: { [any]: any }) -> ()
+
 export type CarrierOptions = {
 	Unreliable: boolean?,
 	Timeout: number?,
@@ -28,6 +30,7 @@ export type StageTable<t> = {
 
 	UseCapture: (self: StageTable<t>, Callback: StageGuard) -> (),
 	UseRelease: (self: StageTable<t>, Callback: StageGuard) -> (),
+	OnUpdate: (self: StageTable<t>, Callback: StageUpdate) -> (() -> ()),
 	Release: (self: StageTable<t>) -> (),
 }
 
@@ -80,6 +83,7 @@ export type InternalStageTable = StageTable<any> & {
 	_proxy: { [any]: any },
 	_captureGuards: { StageGuard },
 	_releaseGuards: { StageGuard },
+	_updateListeners: { StageUpdate },
 	_released: boolean,
 	_id: string,
 	_onRelease: ((self: InternalStageTable) -> ())?,
