@@ -365,7 +365,7 @@ function StagedTable.Snapshot(self: types.InternalStageTable): any
 	return encode(self._store)
 end
 
-return function(initial: { [any]: any }?): types.StageTable<any>
+return function<V>(initial): types.StageTable<V>
 	local self: types.InternalStageTable = setmetatable({
 		_store = rawCopy(initial or {}),
 		_captureGuards = {},
