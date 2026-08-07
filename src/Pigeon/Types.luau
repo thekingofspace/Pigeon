@@ -24,7 +24,7 @@ export type CarrierOptions = {
 }
 
 export type StageTable<t> = {
-	GetTable: (self: StageTable<t>) -> { [any]: any },
+	GetTable: (self: StageTable<t>) -> t,
 
 	UseCapture: (self: StageTable<t>, Callback: StageGuard) -> (),
 	UseRelease: (self: StageTable<t>, Callback: StageGuard) -> (),
